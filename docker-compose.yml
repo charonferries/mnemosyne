@@ -1,0 +1,16 @@
+# Pluto deployment. The deploy hook extracts the repo to
+# /opt/data/mnemosyne/src and runs:
+#   docker compose -f /opt/data/mnemosyne/src/docker-compose.yml up -d --build
+# Config lives OUTSIDE the tree in /opt/data/mnemosyne/.env (root-installed).
+services:
+  mnemosyne:
+    build: .
+    container_name: mnemosyne
+    restart: unless-stopped
+    env_file:
+      - /opt/data/mnemosyne/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8095"
+    ports:
+      - "127.0.0.1:8095:8095"

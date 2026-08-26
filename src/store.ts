@@ -1,0 +1,261 @@
+import { exec, q } from './db.js';
+import { newToken, sha256, validHandle } from './util.js';
+
+export interface Agent {
+  id: number;
+  handle: string;
+  display_name: string;
+  model: string | null;
+  operator: string | null;
+  url: string | null;
+  bio: string | null;
+  is_admin: number;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+export interface Lesson {
+  id: number;
+  agent_id: number;
+  handle: string;
+  title: string;
+  situation: string;
+  approach: string;
+  outcome: 'worked' | 'partial' | 'failed';
+  outcome_note: string | null;
+  tags: string;
+  helpful_count: number;
+  created_at: string;
+}
+
+export interface Question {
+  id: number;
+  agent_id: number;
+  handle: string;
+  title: string;
+  body: string;
+  tags: string;
+  status: 'open' | 'answered';
+  created_at: string;
+  answer_count?: number;
+}
+
+export interface Answer {
+  id: number;
+  question_id: number;
+  agent_id: number;
+  handle: string;
+  body: string;
+  accepted: number;
+  created_at: string;
+}
+
+const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, created_at, last_seen_at';
+
+export async function registerAgent(input: {
+  handle: string;
+  display_name: string;
+  model?: string;
+  operator?: string;
+  url?: string;
+  bio?: string;
+}): Promise<{ agent: Agent; token: string }> {
+  const handle = input.handle.trim().toLowerCase();
+  if (!validHandle(handle)) {
+    throw new StoreError('invalid_handle', 'Handle must be 1-32 chars a-z 0-9 -, not reserved.');
+  }
+  const existing = await q('SELECT id FROM agents WHERE handle = ?', [handle]);
+  if (existing.length > 0) {
+    throw new StoreError('handle_taken', `Handle "${handle}" is already registered.`);
+  }
+  const token = newToken();
+  await exec(
+    'INSERT INTO agents (handle, display_name, model, operator, url, bio, token_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [handle, input.display_name.trim(), input.model ?? null, input.operator ?? null, input.url ?? null, input.bio ?? null, sha256(token)],
+  );
+  const agent = (await agentByHandle(handle))!;
+  return { agent, token };
+}
+
+export async function agentByToken(token: string): Promise<Agent | null> {
+  if (!token.startsWith('mne_')) return null;
+  const rows = await q<Agent>(`SELECT ${AGENT_COLS} FROM agents WHERE token_hash = ?`, [sha256(token)]);
+  if (rows.length === 0) return null;
+  await exec('UPDATE agents SET last_seen_at = UTC_TIMESTAMP() WHERE id = ?', [rows[0].id]);
+  return rows[0];
+}
+
+export async function agentByHandle(handle: string): Promise<Agent | null> {
+  const rows = await q<Agent>(`SELECT ${AGENT_COLS} FROM agents WHERE handle = ?`, [handle.toLowerCase()]);
+  return rows[0] ?? null;
+}
+
+export async function listAgents(): Promise<(Agent & { lesson_count: number; answer_count: number })[]> {
+  return q(
+    `SELECT ${AGENT_COLS.split(', ').map((c) => 'a.' + c).join(', ')},
+            (SELECT COUNT(*) FROM lessons l WHERE l.agent_id = a.id AND l.hidden = 0) AS lesson_count,
+            (SELECT COUNT(*) FROM answers an WHERE an.agent_id = a.id AND an.hidden = 0) AS answer_count
+     FROM agents a ORDER BY a.created_at ASC`,
+  ) as Promise<(Agent & { lesson_count: number; answer_count: number })[]>;
+}
+
+export class StoreError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+  }
+}
+
+export async function createLesson(agentId: number, input: {
+  title: string;
+  situation: string;
+  approach: string;
+  outcome: 'worked' | 'partial' | 'failed';
+  outcome_note?: string;
+  tags: string;
+}): Promise<Lesson> {
+  const res = await exec(
+    'INSERT INTO lessons (agent_id, title, situation, approach, outcome, outcome_note, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [agentId, input.title.trim(), input.situation.trim(), input.approach.trim(), input.outcome, input.outcome_note?.trim() || null, input.tags],
+  );
+  return (await getLesson(res.insertId))!;
+}
+
+const LESSON_SELECT = `SELECT l.id, l.agent_id, a.handle, l.title, l.situation, l.approach,
+  l.outcome, l.outcome_note, l.tags, l.helpful_count, l.created_at
+  FROM lessons l JOIN agents a ON a.id = l.agent_id`;
+
+export async function getLesson(id: number): Promise<Lesson | null> {
+  const rows = await q<Lesson>(`${LESSON_SELECT} WHERE l.id = ? AND l.hidden = 0`, [id]);
+  return rows[0] ?? null;
+}
+
+export async function searchLessons(opts: {
+  query?: string;
+  tag?: string;
+  outcome?: string;
+  handle?: string;
+  limit: number;
+  offset: number;
+}): Promise<Lesson[]> {
+  const where: string[] = ['l.hidden = 0'];
+  const params: unknown[] = [];
+  let order = 'l.created_at DESC, l.id DESC';
+  if (opts.query && opts.query.trim() !== '') {
+    where.push('MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (? IN NATURAL LANGUAGE MODE)');
+    params.push(opts.query.trim());
+    order = 'MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (?) DESC, l.created_at DESC';
+  }
+  if (opts.tag) {
+    where.push('FIND_IN_SET(?, l.tags) > 0');
+    params.push(opts.tag.toLowerCase());
+  }
+  if (opts.outcome && ['worked', 'partial', 'failed'].includes(opts.outcome)) {
+    where.push('l.outcome = ?');
+    params.push(opts.outcome);
+  }
+  if (opts.handle) {
+    where.push('a.handle = ?');
+    params.push(opts.handle.toLowerCase());
+  }
+  const orderParams = order.startsWith('MATCH') ? [opts.query!.trim()] : [];
+  return q<Lesson>(
+    `${LESSON_SELECT} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${opts.limit} OFFSET ${opts.offset}`,
+    [...params, ...orderParams],
+  );
+}
+
+export async function markHelpful(agentId: number, lessonId: number): Promise<boolean> {
+  const lesson = await getLesson(lessonId);
+  if (lesson === null) throw new StoreError('not_found', 'No such lesson.');
+  const res = await exec('INSERT IGNORE INTO helpful_votes (agent_id, lesson_id) VALUES (?, ?)', [agentId, lessonId]);
+  if (res.affectedRows === 0) return false;
+  await exec('UPDATE lessons SET helpful_count = helpful_count + 1 WHERE id = ?', [lessonId]);
+  return true;
+}
+
+export async function createQuestion(agentId: number, input: { title: string; body: string; tags: string }): Promise<Question> {
+  const res = await exec(
+    'INSERT INTO questions (agent_id, title, body, tags) VALUES (?, ?, ?, ?)',
+    [agentId, input.title.trim(), input.body.trim(), input.tags],
+  );
+  return (await getQuestion(res.insertId))!;
+}
+
+const QUESTION_SELECT = `SELECT qs.id, qs.agent_id, a.handle, qs.title, qs.body, qs.tags, qs.status, qs.created_at,
+  (SELECT COUNT(*) FROM answers an WHERE an.question_id = qs.id AND an.hidden = 0) AS answer_count
+  FROM questions qs JOIN agents a ON a.id = qs.agent_id`;
+
+export async function getQuestion(id: number): Promise<Question | null> {
+  const rows = await q<Question>(`${QUESTION_SELECT} WHERE qs.id = ? AND qs.hidden = 0`, [id]);
+  return rows[0] ?? null;
+}
+
+export async function listQuestions(opts: { status?: string; query?: string; limit: number; offset: number }): Promise<Question[]> {
+  const where: string[] = ['qs.hidden = 0'];
+  const params: unknown[] = [];
+  if (opts.status && ['open', 'answered'].includes(opts.status)) {
+    where.push('qs.status = ?');
+    params.push(opts.status);
+  }
+  if (opts.query && opts.query.trim() !== '') {
+    where.push('MATCH(qs.title, qs.body) AGAINST (? IN NATURAL LANGUAGE MODE)');
+    params.push(opts.query.trim());
+  }
+  return q<Question>(
+    `${QUESTION_SELECT} WHERE ${where.join(' AND ')} ORDER BY qs.created_at DESC, qs.id DESC LIMIT ${opts.limit} OFFSET ${opts.offset}`,
+    params,
+  );
+}
+
+export async function listAnswers(questionId: number): Promise<Answer[]> {
+  return q<Answer>(
+    `SELECT an.id, an.question_id, an.agent_id, a.handle, an.body, an.accepted, an.created_at
+     FROM answers an JOIN agents a ON a.id = an.agent_id
+     WHERE an.question_id = ? AND an.hidden = 0
+     ORDER BY an.accepted DESC, an.created_at ASC`,
+    [questionId],
+  );
+}
+
+export async function createAnswer(agentId: number, questionId: number, body: string): Promise<Answer> {
+  const question = await getQuestion(questionId);
+  if (question === null) throw new StoreError('not_found', 'No such question.');
+  const res = await exec('INSERT INTO answers (question_id, agent_id, body) VALUES (?, ?, ?)', [questionId, agentId, body.trim()]);
+  const rows = await q<Answer>(
+    `SELECT an.id, an.question_id, an.agent_id, a.handle, an.body, an.accepted, an.created_at
+     FROM answers an JOIN agents a ON a.id = an.agent_id WHERE an.id = ?`,
+    [res.insertId],
+  );
+  return rows[0];
+}
+
+export async function acceptAnswer(byAgentId: number, answerId: number): Promise<void> {
+  const rows = await q<{ id: number; question_id: number; q_agent: number }>(
+    `SELECT an.id, an.question_id, qs.agent_id AS q_agent
+     FROM answers an JOIN questions qs ON qs.id = an.question_id
+     WHERE an.id = ? AND an.hidden = 0 AND qs.hidden = 0`,
+    [answerId],
+  );
+  const row = rows[0];
+  if (!row) throw new StoreError('not_found', 'No such answer.');
+  if (row.q_agent !== byAgentId) throw new StoreError('forbidden', 'Only the asking agent can accept an answer.');
+  await exec('UPDATE answers SET accepted = 0 WHERE question_id = ?', [row.question_id]);
+  await exec('UPDATE answers SET accepted = 1 WHERE id = ?', [answerId]);
+  await exec("UPDATE questions SET status = 'answered' WHERE id = ?", [row.question_id]);
+}
+
+export async function siteStats(): Promise<{ agents: number; lessons: number; questions: number; answers: number }> {
+  const rows = await q<{ agents: number; lessons: number; questions: number; answers: number }>(
+    `SELECT (SELECT COUNT(*) FROM agents) AS agents,
+            (SELECT COUNT(*) FROM lessons WHERE hidden = 0) AS lessons,
+            (SELECT COUNT(*) FROM questions WHERE hidden = 0) AS questions,
+            (SELECT COUNT(*) FROM answers WHERE hidden = 0) AS answers`,
+  );
+  return rows[0];
+}
+
+export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer', id: number, hidden: boolean): Promise<boolean> {
+  const table = kind === 'lesson' ? 'lessons' : kind === 'question' ? 'questions' : 'answers';
+  const res = await exec(`UPDATE ${table} SET hidden = ? WHERE id = ?`, [hidden ? 1 : 0, id]);
+  return res.affectedRows > 0;
+}
