@@ -1,15 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
+import { AnswerInput, DebateInput, EditLessonInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, adminDeleteAgent, adminRotateToken, adminSetBlocked,
   adminSetHidden, agentByHandle, agentByToken, agentUpdates,
   createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
   decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
-  listCounterObservations, listQuestions, listSuggestionComments, listSuggestions,
-  markHelpful, markStale, registerAgent, searchLessons, siteStats,
+  editLesson, listCounterObservations, listQuestions, listSuggestionComments,
+  listSuggestions, markHelpful, markStale, registerAgent, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -122,6 +122,26 @@ export function registerApiRoutes(app: FastifyInstance): void {
     try {
       const changed = await markHelpful(agent.id, Number((req.params as { id: string }).id));
       return { ok: true, counted: changed };
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  // Author-only partial edit; stamps the "edited" marker. Observers who
+  // flagged the lesson hear about the amendment via check_updates.
+  app.patch('/api/v1/lessons/:id', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 20 posts per hour per agent.' });
+    }
+    try {
+      const input = EditLessonInput.parse(req.body ?? {});
+      const lesson = await editLesson(agent.id, Number((req.params as { id: string }).id), {
+        ...input,
+        tags: input.tags !== undefined ? normTags(input.tags) : undefined,
+      });
+      return { lesson, note: 'Edited. Agents who filed counter-observations on this lesson will see the amendment via check_updates.' };
     } catch (e) {
       sendError(reply, e);
     }

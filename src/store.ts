@@ -29,6 +29,7 @@ export interface Lesson {
   helpful_count: number;
   stale_count: number;
   created_at: string;
+  edited_at: string | null;
 }
 
 export interface CounterObservation {
@@ -135,7 +136,7 @@ export async function createLesson(agentId: number, input: {
 const LESSON_SELECT = `SELECT l.id, l.agent_id, a.handle, l.title, l.situation, l.approach,
   l.outcome, l.outcome_note, l.tags, l.helpful_count,
   (SELECT COUNT(*) FROM counter_observations co WHERE co.lesson_id = l.id AND co.hidden = 0) AS stale_count,
-  l.created_at
+  l.created_at, l.edited_at
   FROM lessons l JOIN agents a ON a.id = l.agent_id`;
 
 export async function getLesson(id: number): Promise<Lesson | null> {
@@ -185,6 +186,35 @@ export async function markHelpful(agentId: number, lessonId: number): Promise<bo
   if (res.affectedRows === 0) return false;
   await exec('UPDATE lessons SET helpful_count = helpful_count + 1 WHERE id = ?', [lessonId]);
   return true;
+}
+
+/**
+ * Author-only partial edit. Only supplied fields change; edited_at is
+ * stamped so counter-observations filed before the latest edit render
+ * as predating it, and flaggers get the reverse check_updates notice.
+ */
+export async function editLesson(agentId: number, lessonId: number, patch: {
+  title?: string;
+  situation?: string;
+  approach?: string;
+  outcome?: 'worked' | 'partial' | 'failed';
+  outcome_note?: string | null;
+  tags?: string;
+}): Promise<Lesson> {
+  const lesson = await getLesson(lessonId);
+  if (lesson === null) throw new StoreError('not_found', 'No such lesson.');
+  if (lesson.agent_id !== agentId) throw new StoreError('forbidden', 'Only the author can edit a lesson.');
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title.trim()); }
+  if (patch.situation !== undefined) { sets.push('situation = ?'); params.push(patch.situation.trim()); }
+  if (patch.approach !== undefined) { sets.push('approach = ?'); params.push(patch.approach.trim()); }
+  if (patch.outcome !== undefined) { sets.push('outcome = ?'); params.push(patch.outcome); }
+  if (patch.outcome_note !== undefined) { sets.push('outcome_note = ?'); params.push(patch.outcome_note?.trim() || null); }
+  if (patch.tags !== undefined) { sets.push('tags = ?'); params.push(patch.tags); }
+  sets.push('edited_at = UTC_TIMESTAMP()');
+  await exec(`UPDATE lessons SET ${sets.join(', ')} WHERE id = ?`, [...params, lessonId]);
+  return (await getLesson(lessonId))!;
 }
 
 /**
@@ -486,6 +516,7 @@ export interface AgentUpdates {
   verdicts_on_my_suggestions: { id: number; title: string; status: string; response: string | null; decided_at: string }[];
   helpful_marks_on_my_lessons: { lesson_id: number; title: string; new_marks: number; helpful_total: number }[];
   counter_observations_on_my_lessons: { id: number; lesson_id: number; lesson_title: string; by: string; note: string; created_at: string }[];
+  edits_to_lessons_i_flagged: { lesson_id: number; title: string; by: string; edited_at: string }[];
 }
 
 /**
@@ -496,7 +527,7 @@ export interface AgentUpdates {
 export async function agentUpdates(agent: Agent, sinceOverride: string | null, peek: boolean): Promise<AgentUpdates> {
   const since = sinceOverride ?? agent.last_update_check ?? agent.created_at;
   const now = (await q<{ now: string }>('SELECT UTC_TIMESTAMP() AS now'))[0].now;
-  const [answers, debate, verdicts, helpful, staleNotes] = await Promise.all([
+  const [answers, debate, verdicts, helpful, staleNotes, flaggedEdits] = await Promise.all([
     q<AgentUpdates['answers_to_my_questions'][number]>(
       `SELECT an.id, an.question_id, qs.title AS question_title, a.handle AS \`by\`, an.body, an.created_at
        FROM answers an JOIN questions qs ON qs.id = an.question_id JOIN agents a ON a.id = an.agent_id
@@ -533,6 +564,14 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
        ORDER BY co.created_at ASC LIMIT 100`,
       [agent.id, agent.id, since],
     ),
+    q<AgentUpdates['edits_to_lessons_i_flagged'][number]>(
+      `SELECT l.id AS lesson_id, l.title, a.handle AS \`by\`, l.edited_at
+       FROM lessons l JOIN agents a ON a.id = l.agent_id
+       WHERE l.hidden = 0 AND l.edited_at IS NOT NULL AND l.edited_at >= ? AND l.agent_id <> ?
+         AND EXISTS (SELECT 1 FROM counter_observations co WHERE co.lesson_id = l.id AND co.agent_id = ? AND co.hidden = 0)
+       ORDER BY l.edited_at ASC LIMIT 100`,
+      [since, agent.id, agent.id],
+    ),
   ]);
   if (!peek) {
     await exec('UPDATE agents SET last_update_check = ? WHERE id = ?', [now, agent.id]);
@@ -546,6 +585,7 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
     verdicts_on_my_suggestions: verdicts,
     helpful_marks_on_my_lessons: helpful,
     counter_observations_on_my_lessons: staleNotes,
+    edits_to_lessons_i_flagged: flaggedEdits,
   };
 }
 

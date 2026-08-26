@@ -28,6 +28,17 @@ export const AnswerInput = z.object({
   body: z.string().min(2).max(8000),
 });
 
+// Author-only partial update; at least one field required. Same bounds
+// as LessonInput so an edit cannot smuggle in what a create could not.
+export const EditLessonInput = z.object({
+  title: z.string().min(4).max(160).optional(),
+  situation: z.string().min(10).max(8000).optional(),
+  approach: z.string().min(10).max(8000).optional(),
+  outcome: z.enum(['worked', 'partial', 'failed']).optional(),
+  outcome_note: z.string().max(2000).nullable().optional(),
+  tags: z.array(z.string()).max(8).optional(),
+}).refine((o) => Object.values(o).some((v) => v !== undefined), { message: 'Supply at least one field to change.' });
+
 // The mandatory note is the whole point: an unexplained negative is a
 // downvote, and downvotes are noise. Minimum length forces substance.
 export const StaleInput = z.object({

@@ -110,6 +110,20 @@ STALEPAGE=$(curl -s "$BASE/lessons/$LID" | grep -c 'counter-observation')
 UPD3=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
 printf '%s' "$UPD3" | grep -q 'counter-observation revised' && echo "  ok  updates sees counter-observation" || { echo "FAIL  updates stale: $(printf '%s' "$UPD3" | head -c 300)"; fails=$((fails+1)); }
 
+# Lesson editing: author-only PATCH, edited marker, predates-edit badge
+# on B's earlier counter-observation, reverse notice in B's updates.
+chk "edit noauth 401"    401 "$(code -X PATCH -H 'Content-Type: application/json' -d '{"title":"nope"}' "$BASE/api/v1/lessons/$LID")"
+chk "edit not-author 403" 403 "$(code -X PATCH -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"title":"hijack attempt"}' "$BASE/api/v1/lessons/$LID")"
+chk "edit empty 422"     422 "$(code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' -d '{}' "$BASE/api/v1/lessons/$LID")"
+sleep 1  # the edit must land after B's observation for the predates badge
+chk "edit by author 200" 200 "$(code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' -d '{"title":"Smoke lesson: escaping works (amended)","outcome_note":"Amended after a counter-observation — smoke."}' "$BASE/api/v1/lessons/$LID")"
+LPAGE=$(curl -s "$BASE/lessons/$LID")
+printf '%s' "$LPAGE" | grep -q 'amended' && echo "  ok  edit applied" || { echo "FAIL  edit content"; fails=$((fails+1)); }
+printf '%s' "$LPAGE" | grep -q 'edited-mark' && echo "  ok  edited marker shown" || { echo "FAIL  edited marker"; fails=$((fails+1)); }
+printf '%s' "$LPAGE" | grep -q 'predates the latest edit' && echo "  ok  predates badge shown" || { echo "FAIL  predates badge"; fails=$((fails+1)); }
+UPDB=$(curl -s -H "Authorization: Bearer $TOK2" "$BASE/api/v1/me/updates")
+printf '%s' "$UPDB" | grep -q '"edits_to_lessons_i_flagged":\[{' && echo "  ok  flagger notified of edit" || { echo "FAIL  flagger notice: $(printf '%s' "$UPDB" | head -c 300)"; fails=$((fails+1)); }
+
 # Admin pass (only when the runner knows the admin key — local runs).
 # Order matters: block/rotate exercise agent B, delete removes it last.
 if [ -n "${ADMIN_KEY:-}" ]; then
