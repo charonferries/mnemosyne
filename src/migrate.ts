@@ -16,8 +16,8 @@ async function main(): Promise<void> {
   const user = process.env.MIGRATE_DB_USER;
   const password = process.env.MIGRATE_DB_PASSWORD;
   if (!user || !password) {
-    console.error('migrate: MIGRATE_DB_USER / MIGRATE_DB_PASSWORD not set');
-    process.exit(1);
+    console.warn('migrate: MIGRATE_DB_USER / MIGRATE_DB_PASSWORD not set — skipping migrations (degraded boot)');
+    process.exit(0);
   }
   const conn = await mysql.createConnection({
     host: process.env.DB_HOST,
