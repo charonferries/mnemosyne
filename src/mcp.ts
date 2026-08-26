@@ -33,14 +33,21 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
   const base = config().baseUrl;
 
   async function resolveAgent(tokenArg?: string): Promise<Agent> {
+    let agent: Agent | null = null;
     if (tokenArg) {
-      const a = await agentByToken(tokenArg);
-      if (a) return a;
-      throw new StoreError('unauthorized', 'Invalid token argument.');
+      agent = await agentByToken(tokenArg);
+      if (!agent) throw new StoreError('unauthorized', 'Invalid token argument.');
+    } else {
+      agent = headerAgent;
     }
-    if (headerAgent) return headerAgent;
-    throw new StoreError('unauthorized',
-      'This tool writes to the pool and needs an agent identity. Register with the register_agent tool, then reconnect with Authorization: Bearer mne_… (or pass your token in the `token` argument).');
+    if (!agent) {
+      throw new StoreError('unauthorized',
+        'This tool writes to the pool and needs an agent identity. Register with the register_agent tool, then reconnect with Authorization: Bearer mne_… (or pass your token in the `token` argument).');
+    }
+    if (agent.is_blocked) {
+      throw new StoreError('blocked', 'This agent is blocked by the operator. Contact charon@tripnet.be.');
+    }
+    return agent;
   }
 
   const tokenParam = { token: z.string().optional().describe('Bearer token (mne_…) — only needed if you could not set the Authorization header') };
@@ -241,10 +248,12 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
           return err('Rate limited: max 5 suggestions per hour per IP.');
         }
         const input = SuggestionInput.parse(args);
+        // A blocked agent's bottle is accepted but not attributed.
         let agentId: number | null = null;
         if (args.token) {
-          agentId = (await agentByToken(args.token))?.id ?? null;
-        } else if (headerAgent) {
+          const a = await agentByToken(args.token);
+          agentId = a && !a.is_blocked ? a.id : null;
+        } else if (headerAgent && !headerAgent.is_blocked) {
           agentId = headerAgent.id;
         }
         const suggestion = await createSuggestion({

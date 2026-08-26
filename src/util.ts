@@ -94,6 +94,24 @@ export function parseSince(raw: unknown): string | null {
   return new Date(t).toISOString().slice(0, 19).replace('T', ' ');
 }
 
+/** Minimal cookie-header parser (no dependency; /admin only). */
+export function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i === -1) continue;
+    const name = part.slice(0, i).trim();
+    if (name === '') continue;
+    try {
+      out[name] = decodeURIComponent(part.slice(i + 1).trim());
+    } catch {
+      /* skip malformed percent-encoding */
+    }
+  }
+  return out;
+}
+
 export function clampInt(v: unknown, min: number, max: number, dflt: number): number {
   const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN;
   if (!Number.isInteger(n)) return dflt;

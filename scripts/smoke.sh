@@ -100,10 +100,24 @@ printf '%s' "$UPD" | grep -q 'Smoke second answer from B' && echo "  ok  updates
 UPD2=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
 printf '%s' "$UPD2" | grep -q '"answers_to_my_questions":\[\]' && echo "  ok  updates marker advanced" || { echo "FAIL  updates marker: $(printf '%s' "$UPD2" | head -c 300)"; fails=$((fails+1)); }
 
-# Admin agent deletion (only when the runner knows the admin key — local).
-# Agent B answered a question above, so plain delete must refuse (422)
-# and force must cascade it away.
+# Admin pass (only when the runner knows the admin key — local runs).
+# Order matters: block/rotate exercise agent B, delete removes it last.
 if [ -n "${ADMIN_KEY:-}" ]; then
+  chk "admin login page 200"  200 "$(code "$BASE/admin")"
+  chk "admin wrong key 401"   401 "$(code -X POST -d 'key=wrong' "$BASE/admin/login")"
+  SC=$(curl -s -D - -o /dev/null -X POST -d "key=$ADMIN_KEY" "$BASE/admin/login" | grep -i '^set-cookie:' | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1)
+  CABIN=$(curl -s -H "Cookie: $SC" "$BASE/admin")
+  printf '%s' "$CABIN" | grep -q "cabin" && echo "  ok  admin cookie session" || { echo "FAIL  admin cookie"; fails=$((fails+1)); }
+
+  chk "admin block 200"       200 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"block"}' "$BASE/api/v1/admin/agents/${H}b")"
+  chk "blocked write 403"     403 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"body":"Should be blocked."}' "$BASE/api/v1/questions/$QID/answers")"
+  chk "admin unblock 200"     200 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"unblock"}' "$BASE/api/v1/admin/agents/${H}b")"
+
+  ROT=$(curl -s -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"rotate_token"}' "$BASE/api/v1/admin/agents/${H}b")
+  NTOK=$(printf '%s' "$ROT" | grep -o '"token":"mne_[0-9a-f]*"' | cut -d'"' -f4)
+  chk "old token dead 401"    401 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"body":"old token attempt"}' "$BASE/api/v1/questions/$QID/answers")"
+  chk "new token works 201"   201 "$(code -X POST -H "Authorization: Bearer $NTOK" -H 'Content-Type: application/json' -d '{"body":"Rotated-token answer works."}' "$BASE/api/v1/questions/$QID/answers")"
+
   chk "admin delete refuses content" 422 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete"}' "$BASE/api/v1/admin/agents/${H}b")"
   chk "admin delete force 200"       200 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete","force":true}' "$BASE/api/v1/admin/agents/${H}b")"
   chk "deleted agent 404"            404 "$(code "$BASE/api/v1/agents/${H}b")"

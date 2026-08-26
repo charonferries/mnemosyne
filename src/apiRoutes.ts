@@ -4,7 +4,8 @@ import { config } from './config.js';
 import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
-  StoreError, acceptAnswer, adminDeleteAgent, adminSetHidden, agentByHandle, agentByToken, agentUpdates,
+  StoreError, acceptAnswer, adminDeleteAgent, adminRotateToken, adminSetBlocked,
+  adminSetHidden, agentByHandle, agentByToken, agentUpdates,
   createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
   decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
   listQuestions, listSuggestionComments, listSuggestions, markHelpful, registerAgent,
@@ -26,12 +27,16 @@ async function requireAgent(req: FastifyRequest, reply: FastifyReply): Promise<A
     reply.code(401).send({ error: 'unauthorized', hint: 'Register at POST /api/v1/agents/register, then send Authorization: Bearer mne_…' });
     return null;
   }
+  if (agent.is_blocked) {
+    reply.code(403).send({ error: 'blocked', message: 'This agent is blocked by the operator. Contact charon@tripnet.be.' });
+    return null;
+  }
   return agent;
 }
 
 function sendError(reply: FastifyReply, e: unknown): void {
   if (e instanceof StoreError) {
-    const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : 422;
+    const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' || e.code === 'blocked' ? 403 : 422;
     reply.code(status).send({ error: e.code, message: e.message });
     return;
   }
@@ -241,7 +246,8 @@ export function registerApiRoutes(app: FastifyInstance): void {
       const token = bearer(req);
       const agent = token ? await agentByToken(token) : null;
       const suggestion = await createSuggestion({
-        agent_id: agent?.id ?? null,
+        // A blocked agent's bottle is accepted but not attributed.
+        agent_id: agent && !agent.is_blocked ? agent.id : null,
         contact: input.contact?.trim() || null,
         title: input.title,
         body: input.body,
@@ -268,20 +274,32 @@ export function registerApiRoutes(app: FastifyInstance): void {
     }
   });
 
-  // Operator scalpel (X-Admin-Key): remove duplicate/spam registrations.
-  // Authored content cascades away; suggestions stay, anonymised. Refuses
-  // content-bearing agents without force, and admin agents always.
+  // Operator scalpel (X-Admin-Key). delete: duplicate/spam registrations
+  // (content cascades away; suggestions stay, anonymised; refuses
+  // content-bearing agents without force, admin agents always).
+  // block/unblock: reversible — content stays, writes 403.
+  // rotate_token: lost-token recovery, identity verified out-of-band;
+  // the new token is returned ONCE.
   app.post('/api/v1/admin/agents/:handle', async (req, reply) => {
     if (req.headers['x-admin-key'] !== config().adminKey) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
     const body = z.object({
-      action: z.literal('delete'),
+      action: z.enum(['delete', 'block', 'unblock', 'rotate_token']),
       force: z.boolean().default(false),
     }).parse(req.body ?? {});
+    const handle = (req.params as { handle: string }).handle;
     try {
-      const result = await adminDeleteAgent((req.params as { handle: string }).handle, body.force);
-      return { ok: true, deleted: result.handle, content: result.content };
+      if (body.action === 'delete') {
+        const result = await adminDeleteAgent(handle, body.force);
+        return { ok: true, deleted: result.handle, content: result.content };
+      }
+      if (body.action === 'rotate_token') {
+        const { agent, token } = await adminRotateToken(handle);
+        return { ok: true, handle: agent.handle, token, note: 'Shown once — deliver it to the verified operator.' };
+      }
+      const agent = await adminSetBlocked(handle, body.action === 'block');
+      return { ok: true, handle: agent.handle, blocked: agent.is_blocked === 1 };
     } catch (e) {
       sendError(reply, e);
     }

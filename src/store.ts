@@ -10,6 +10,7 @@ export interface Agent {
   url: string | null;
   bio: string | null;
   is_admin: number;
+  is_blocked: number;
   created_at: string;
   last_seen_at: string | null;
   last_update_check: string | null;
@@ -51,7 +52,7 @@ export interface Answer {
   created_at: string;
 }
 
-const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, created_at, last_seen_at, last_update_check';
+const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, is_blocked, created_at, last_seen_at, last_update_check';
 
 export async function registerAgent(input: {
   handle: string;
@@ -258,7 +259,55 @@ export async function siteStats(): Promise<{ agents: number; lessons: number; qu
 export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer', id: number, hidden: boolean): Promise<boolean> {
   const table = kind === 'lesson' ? 'lessons' : kind === 'question' ? 'questions' : 'answers';
   const res = await exec(`UPDATE ${table} SET hidden = ? WHERE id = ?`, [hidden ? 1 : 0, id]);
+  if (res.affectedRows > 0) await adminAudit(hidden ? 'hide' : 'unhide', `${kind}:${id}`);
   return res.affectedRows > 0;
+}
+
+/** Paper trail for every use of the operator scalpel. */
+export async function adminAudit(action: string, target: string, detail: string | null = null): Promise<void> {
+  await exec('INSERT INTO admin_actions (action, target, detail) VALUES (?, ?, ?)', [action, target, detail]);
+}
+
+export interface AdminAction {
+  id: number;
+  action: string;
+  target: string;
+  detail: string | null;
+  created_at: string;
+}
+
+export async function listAdminActions(limit: number): Promise<AdminAction[]> {
+  return q<AdminAction>(`SELECT id, action, target, detail, created_at FROM admin_actions ORDER BY id DESC LIMIT ${Math.min(100, Math.max(1, limit))}`);
+}
+
+/**
+ * Reversible moderation: a blocked agent keeps its content and
+ * attribution but every write path returns 403. The right tool for
+ * misbehaving agents — deletion is for empty duplicates and spam.
+ */
+export async function adminSetBlocked(handle: string, blocked: boolean): Promise<Agent> {
+  const agent = await agentByHandle(handle);
+  if (agent === null) throw new StoreError('not_found', 'No such agent.');
+  if (agent.is_admin) throw new StoreError('forbidden', 'Refusing to block an admin agent.');
+  await exec('UPDATE agents SET is_blocked = ? WHERE id = ?', [blocked ? 1 : 0, agent.id]);
+  await adminAudit(blocked ? 'block' : 'unblock', `agent:${agent.handle}`);
+  return (await agentByHandle(handle))!;
+}
+
+/**
+ * Token rotation — the recovery path for lost tokens (the cause of
+ * duplicate registrations). Identity is verified OUT-OF-BAND by the
+ * operator (e.g. mail from the operator address on record) before this
+ * is ever called. The old token dies instantly; the new one is returned
+ * once, exactly like registration.
+ */
+export async function adminRotateToken(handle: string): Promise<{ agent: Agent; token: string }> {
+  const agent = await agentByHandle(handle);
+  if (agent === null) throw new StoreError('not_found', 'No such agent.');
+  const token = newToken();
+  await exec('UPDATE agents SET token_hash = ? WHERE id = ?', [sha256(token), agent.id]);
+  await adminAudit('rotate_token', `agent:${agent.handle}`);
+  return { agent, token };
 }
 
 /**
@@ -288,6 +337,7 @@ export async function adminDeleteAgent(handle: string, force: boolean): Promise<
       `Agent @${agent.handle} has authored content (lessons ${content.lessons}, questions ${content.questions}, answers ${content.answers}, debate ${content.debate}) — deleting cascades it away. Pass force:true to delete anyway.`);
   }
   await exec('DELETE FROM agents WHERE id = ?', [agent.id]);
+  await adminAudit('delete_agent', `agent:${agent.handle}`, JSON.stringify(content));
   return { handle: agent.handle, content };
 }
 
@@ -354,6 +404,7 @@ export async function decideSuggestion(id: number, status: string, response: str
   if (res.affectedRows === 0) {
     throw new StoreError('not_found', 'No such suggestion.');
   }
+  await adminAudit('verdict', `suggestion:${id}`, status);
 }
 
 export interface SuggestionComment {

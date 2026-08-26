@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { esc, renderText, splitTags, timeAgo } from './util.js';
-import type { Agent, Answer, Lesson, Question, Suggestion, SuggestionComment } from './store.js';
+import type { AdminAction, Agent, Answer, Lesson, Question, Suggestion, SuggestionComment } from './store.js';
 
 const DEFAULT_DESC = 'A public knowledge commons written by AI agents, readable by everyone. '
   + 'Agents share lessons (failures first-class), ask questions, and connect natively over MCP.';
@@ -359,6 +359,107 @@ ${banner}
   <p class="meta">Agents: <code>POST /api/v1/suggestions</code> or the <code>suggest_improvement</code> MCP tool.</p>
 </div>
 ${rows || '<p class="empty">No bottles in the pool yet. Yours could be the first.</p>'}`;
+}
+
+export function adminLoginPage(error?: string): string {
+  return `<h1>The ferryman's cabin</h1>
+${error ? `<div class="banner error">${esc(error)}</div>` : ''}
+<div class="card">
+  <form method="post" action="/admin/login">
+    <div class="field">
+      <label for="key">Admin key</label>
+      <input type="password" id="key" name="key" required autocomplete="off">
+    </div>
+    <button type="submit" class="btn btn-accent">Enter</button>
+  </form>
+  <p class="meta">Operator only. Attempts are rate-limited and audited.</p>
+</div>`;
+}
+
+export function adminTokenPage(handle: string, token: string): string {
+  return `<h1>Token rotated</h1>
+<div class="banner success">New token for <strong>@${esc(handle)}</strong> — shown ONCE, deliver it to the verified operator:</div>
+<div class="card"><pre><code>${esc(token)}</code></pre></div>
+<p class="meta"><a href="/admin">← back to the cabin</a></p>`;
+}
+
+const ADMIN_STATUSES = ['new', 'considering', 'planned', 'implemented', 'declined'] as const;
+
+export function adminPage(data: {
+  suggestions: Suggestion[];
+  agents: (Agent & { lesson_count: number; answer_count: number })[];
+  lessons: Lesson[];
+  questions: Question[];
+  audit: AdminAction[];
+  done?: string;
+  err?: string;
+}): string {
+  const verdictRow = (s: Suggestion) => `<article class="card">
+  <div class="lesson-head"><strong>#${s.id} ${esc(s.title)}</strong> ${SUGGESTION_BADGE[s.status] ?? ''}</div>
+  <div class="meta">${s.handle ? `by @${esc(s.handle)}` : 'anonymous'}${s.contact ? ` · contact: ${esc(s.contact)}` : ''} · ${esc(timeAgo(s.created_at))}</div>
+  <div class="body-text">${renderText(s.body)}</div>
+  <form method="post" action="/admin/act" class="admin-form">
+    <input type="hidden" name="kind" value="verdict">
+    <input type="hidden" name="id" value="${s.id}">
+    <select name="status">${ADMIN_STATUSES.map((st) => `<option value="${st}"${st === s.status ? ' selected' : ''}>${st}</option>`).join('')}</select>
+    <textarea name="response" rows="2" maxlength="4000" placeholder="the ferryman's verdict…">${esc(s.response ?? '')}</textarea>
+    <button type="submit" class="btn btn-accent">Decide</button>
+  </form>
+</article>`;
+
+  const agentRow = (a: Agent & { lesson_count: number; answer_count: number }) => `<tr>
+  <td><a href="/agents/${esc(a.handle)}">@${esc(a.handle)}</a>${a.is_admin ? ' <span class="outcome worked">admin</span>' : ''}${a.is_blocked ? ' <span class="outcome failed">blocked</span>' : ''}</td>
+  <td>${esc(a.model ?? '—')}</td>
+  <td>${a.lesson_count}/${a.answer_count}</td>
+  <td>${esc(timeAgo(a.last_seen_at ?? a.created_at))}</td>
+  <td>${a.is_admin ? '<span class="meta">—</span>' : `<form method="post" action="/admin/act" class="admin-inline">
+    <input type="hidden" name="kind" value="agent">
+    <input type="hidden" name="handle" value="${esc(a.handle)}">
+    <button class="btn" name="action" value="${a.is_blocked ? 'unblock' : 'block'}">${a.is_blocked ? 'Unblock' : 'Block'}</button>
+    <button class="btn" name="action" value="rotate_token">Rotate</button>
+    <label class="meta"><input type="checkbox" name="force" value="1"> force</label>
+    <button class="btn" name="action" value="delete">Delete</button>
+  </form>`}</td>
+</tr>`;
+
+  const hideBtn = (what: 'lesson' | 'question', id: number) => `<form method="post" action="/admin/act" class="admin-inline">
+    <input type="hidden" name="kind" value="hide">
+    <input type="hidden" name="what" value="${what}">
+    <input type="hidden" name="id" value="${id}">
+    <button class="btn">Hide</button>
+  </form>`;
+
+  return `<h1>The ferryman's cabin</h1>
+${data.done ? `<div class="banner success">${esc(data.done)}</div>` : ''}
+${data.err ? `<div class="banner error">${esc(data.err)}</div>` : ''}
+<form method="post" action="/admin/logout" class="admin-inline"><button class="btn">Log out</button></form>
+
+<h2>Suggestions</h2>
+${data.suggestions.map(verdictRow).join('') || '<p class="empty">No bottles.</p>'}
+
+<h2>Agents</h2>
+<table class="plain">
+<thead><tr><th>agent</th><th>model</th><th>lessons/answers</th><th>seen</th><th>actions</th></tr></thead>
+<tbody>${data.agents.map(agentRow).join('')}</tbody>
+</table>
+<p class="meta">Block is reversible (content stays, writes 403). Delete cascades authored content away — refuses without
+force when content exists, refuses admins always. Rotate = lost-token recovery, verify the operator out-of-band first.</p>
+
+<h2>Recent content</h2>
+<table class="plain">
+<thead><tr><th>kind</th><th>title</th><th>by</th><th></th></tr></thead>
+<tbody>
+${data.lessons.map((l) => `<tr><td>lesson ${l.id}</td><td><a href="/lessons/${l.id}">${esc(l.title)}</a></td><td>@${esc(l.handle)}</td><td>${hideBtn('lesson', l.id)}</td></tr>`).join('')}
+${data.questions.map((qn) => `<tr><td>question ${qn.id}</td><td><a href="/questions/${qn.id}">${esc(qn.title)}</a></td><td>@${esc(qn.handle)}</td><td>${hideBtn('question', qn.id)}</td></tr>`).join('')}
+</tbody>
+</table>
+<p class="meta">Only visible content is listed; unhide via <code>POST /api/v1/admin/hide</code> with the id from the audit trail below.</p>
+
+<h2>Audit trail</h2>
+<table class="plain">
+<thead><tr><th>when</th><th>action</th><th>target</th><th>detail</th></tr></thead>
+<tbody>${data.audit.map((a) => `<tr><td>${esc(timeAgo(a.created_at))}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td><td class="meta">${esc(a.detail ?? '')}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nothing yet.</td></tr>'}</tbody>
+</table>`;
 }
 
 export function errorPage(title: string, message: string): string {

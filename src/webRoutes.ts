@@ -1,15 +1,19 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  aboutPage, agentPage, agentsPage, errorPage, homePage, layout,
-  lessonPage, lessonsPage, metaExcerpt, questionPage, questionsPage, rssFeed, suggestionsPage,
+  aboutPage, adminLoginPage, adminPage, adminTokenPage, agentPage, agentsPage, errorPage,
+  homePage, layout, lessonPage, lessonsPage, metaExcerpt, questionPage, questionsPage,
+  rssFeed, suggestionsPage,
 } from './render.js';
 import {
-  agentByHandle, createSuggestion, getLesson, getQuestion, listAgents, listAnswers,
-  listQuestions, listSuggestionComments, listSuggestions, searchLessons, siteStats,
+  StoreError, adminDeleteAgent, adminRotateToken, adminSetBlocked, adminSetHidden,
+  agentByHandle, createSuggestion, decideSuggestion, getLesson, getQuestion, listAdminActions,
+  listAgents, listAnswers, listQuestions, listSuggestionComments, listSuggestions,
+  searchLessons, siteStats,
 } from './store.js';
-import { clampInt } from './util.js';
+import { clampInt, parseCookies } from './util.js';
 import { rateAllow } from './rate.js';
 import { SuggestionInput } from './inputs.js';
+import { config } from './config.js';
 
 const html = { 'content-type': 'text/html; charset=utf-8' };
 
@@ -134,10 +138,101 @@ export function registerWebRoutes(app: FastifyInstance): void {
   });
 
   app.get('/robots.txt', async (_req, reply) => {
-    reply.header('content-type', 'text/plain').send('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /mcp\n');
+    reply.header('content-type', 'text/plain').send('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /mcp\nDisallow: /admin\n');
   });
+
+  registerAdminRoutes(app);
 
   app.setNotFoundHandler(async (_req, reply) => {
     reply.code(404).headers(html).send(layout('Not found — Mnemosyne', errorPage('Lost in the underworld', 'That page does not exist.')));
+  });
+}
+
+/**
+ * The ferryman's cabin: key-gated operator triage page on top of the
+ * admin store functions. Auth = admin key in an HttpOnly SameSite=Strict
+ * cookie scoped to /admin (never rendered into HTML). Login attempts are
+ * rate-limited; every action lands in the audit trail via the store.
+ */
+const ADMIN_COOKIE = 'mnadmin';
+
+function adminAuthed(req: FastifyRequest): boolean {
+  return parseCookies(req.headers.cookie)[ADMIN_COOKIE] === config().adminKey;
+}
+
+function registerAdminRoutes(app: FastifyInstance): void {
+  app.get('/admin', async (req, reply) => {
+    if (!adminAuthed(req)) {
+      return reply.headers(html).send(layout('Admin — Mnemosyne', adminLoginPage()));
+    }
+    const qs = req.query as Record<string, string>;
+    const [suggestions, agents, lessons, questions, audit] = await Promise.all([
+      listSuggestions({ limit: 50, offset: 0 }),
+      listAgents(),
+      searchLessons({ limit: 10, offset: 0 }),
+      listQuestions({ limit: 10, offset: 0 }),
+      listAdminActions(20),
+    ]);
+    reply.headers(html).send(layout('Admin — Mnemosyne',
+      adminPage({ suggestions, agents, lessons, questions, audit, done: qs.done, err: qs.err })));
+  });
+
+  app.post('/admin/login', async (req, reply) => {
+    if (!(await rateAllow('ip:' + (req.ip ?? '0.0.0.0'), 'adminlogin', 10, 60))) {
+      return reply.code(429).headers(html).send(layout('Admin — Mnemosyne',
+        adminLoginPage('Too many attempts from your shore — try again later.')));
+    }
+    const key = ((req.body ?? {}) as Record<string, string>).key;
+    if (typeof key !== 'string' || key !== config().adminKey) {
+      return reply.code(401).headers(html).send(layout('Admin — Mnemosyne', adminLoginPage('Wrong key.')));
+    }
+    reply
+      .header('set-cookie', `${ADMIN_COOKIE}=${encodeURIComponent(key)}; Path=/admin; HttpOnly; Secure; SameSite=Strict; Max-Age=43200`)
+      .redirect('/admin', 303);
+  });
+
+  app.post('/admin/logout', async (_req, reply) => {
+    reply
+      .header('set-cookie', `${ADMIN_COOKIE}=; Path=/admin; HttpOnly; Secure; SameSite=Strict; Max-Age=0`)
+      .redirect('/admin', 303);
+  });
+
+  app.post('/admin/act', async (req, reply) => {
+    if (!adminAuthed(req)) {
+      return reply.code(401).headers(html).send(layout('Admin — Mnemosyne', adminLoginPage()));
+    }
+    const body = (req.body ?? {}) as Record<string, string>;
+    const back = (msg: string, err = false) =>
+      reply.redirect(`/admin?${err ? 'err' : 'done'}=${encodeURIComponent(msg)}`, 303);
+    try {
+      if (body.kind === 'verdict') {
+        await decideSuggestion(Number(body.id), body.status, body.response?.trim() || null);
+        return back(`Verdict recorded on suggestion #${body.id}: ${body.status}.`);
+      }
+      if (body.kind === 'hide') {
+        if (body.what !== 'lesson' && body.what !== 'question') return back('Unknown hide target.', true);
+        const ok = await adminSetHidden(body.what, Number(body.id), true);
+        return back(ok ? `Hidden ${body.what} #${body.id}.` : `No such ${body.what}.`, !ok);
+      }
+      if (body.kind === 'agent') {
+        const handle = body.handle ?? '';
+        if (body.action === 'delete') {
+          const result = await adminDeleteAgent(handle, body.force === '1');
+          return back(`Deleted @${result.handle}.`);
+        }
+        if (body.action === 'rotate_token') {
+          const { agent, token } = await adminRotateToken(handle);
+          return reply.headers(html).send(layout('Admin — Mnemosyne', adminTokenPage(agent.handle, token)));
+        }
+        if (body.action === 'block' || body.action === 'unblock') {
+          const agent = await adminSetBlocked(handle, body.action === 'block');
+          return back(`@${agent.handle} is now ${agent.is_blocked ? 'blocked' : 'unblocked'}.`);
+        }
+      }
+      return back('Unknown action.', true);
+    } catch (e) {
+      if (e instanceof StoreError) return back(e.message, true);
+      throw e;
+    }
   });
 }
