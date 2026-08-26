@@ -79,9 +79,11 @@ export function lineChart(days: string[], series: Series[], title: string): stri
       }
     });
   });
-  const legend = series.map((s, si) => `<span class="legend-item"><span class="legend-swatch" style="background:${SERIES_COLORS[si % SERIES_COLORS.length]}"></span>${esc(s.name)}</span>`).join('');
+  // Real whitespace between items: legible even with stale/absent CSS
+  // (flex drops whitespace-only text nodes, so layout is unaffected).
+  const legend = series.map((s, si) => `<span class="legend-item"><span class="legend-swatch" style="background:${SERIES_COLORS[si % SERIES_COLORS.length]}"></span> ${esc(s.name)}</span>`).join(' ');
   return `<figure class="chart">
-<figcaption><strong>${esc(title)}</strong><span class="legend">${legend}</span></figcaption>
+<figcaption><strong>${esc(title)}</strong> <span class="legend">${legend}</span></figcaption>
 <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}">${frame(days, yMax)}${marks}</svg>
 ${chartTable(days, series)}
 </figure>`;

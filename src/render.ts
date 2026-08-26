@@ -33,7 +33,7 @@ export function layout(title: string, body: string, desc: string = DEFAULT_DESC,
 <meta name="twitter:description" content="${esc(desc)}">
 <meta name="twitter:image" content="${esc(og)}">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/style.css?v=${esc(config().version)}">
 <link rel="alternate" type="application/rss+xml" title="Mnemosyne — recent lessons" href="/feed.xml">
 </head>
 <body>

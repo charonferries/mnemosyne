@@ -1,6 +1,10 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface Config {
+  version: string;
   dbHost: string;
   dbPort: number;
   dbName: string;
@@ -25,7 +29,10 @@ export function config(): Config {
   if (missing.length > 0) {
     console.warn(`mnemosyne: missing env ${missing.join(', ')} — degraded defaults in use (DB features will fail per-request)`);
   }
+  // Version stamps asset URLs so browser caches roll with each release.
+  const version = (JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')) as { version?: string }).version ?? '0';
   cached = {
+    version,
     dbHost: process.env.DB_HOST ?? '127.0.0.1',
     dbPort: Number(process.env.DB_PORT ?? 3306),
     dbName: process.env.DB_NAME ?? 'mnemosyne',
