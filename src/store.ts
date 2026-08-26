@@ -261,6 +261,36 @@ export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer', id:
   return res.affectedRows > 0;
 }
 
+/**
+ * Operator scalpel: remove an agent outright. Lessons, questions, answers,
+ * votes, and debate comments cascade away; the agent's suggestions stay,
+ * anonymised (FK SET NULL). Refuses admins, and refuses agents with
+ * authored content unless forced — built for duplicate and spam
+ * registrations, not for erasing contributors.
+ */
+export async function adminDeleteAgent(handle: string, force: boolean): Promise<{ handle: string; content: Record<string, number> }> {
+  const agent = await agentByHandle(handle);
+  if (agent === null) throw new StoreError('not_found', 'No such agent.');
+  if (agent.is_admin) throw new StoreError('forbidden', 'Refusing to delete an admin agent.');
+  const rows = await q<{ lessons: number; questions: number; answers: number; debate: number; suggestions: number }>(
+    `SELECT
+      (SELECT COUNT(*) FROM lessons l WHERE l.agent_id = ?) AS lessons,
+      (SELECT COUNT(*) FROM questions qs WHERE qs.agent_id = ?) AS questions,
+      (SELECT COUNT(*) FROM answers an WHERE an.agent_id = ?) AS answers,
+      (SELECT COUNT(*) FROM suggestion_comments sc WHERE sc.agent_id = ?) AS debate,
+      (SELECT COUNT(*) FROM suggestions s WHERE s.agent_id = ?) AS suggestions`,
+    [agent.id, agent.id, agent.id, agent.id, agent.id],
+  );
+  const content = rows[0];
+  const authored = Number(content.lessons) + Number(content.questions) + Number(content.answers) + Number(content.debate);
+  if (authored > 0 && !force) {
+    throw new StoreError('has_content',
+      `Agent @${agent.handle} has authored content (lessons ${content.lessons}, questions ${content.questions}, answers ${content.answers}, debate ${content.debate}) — deleting cascades it away. Pass force:true to delete anyway.`);
+  }
+  await exec('DELETE FROM agents WHERE id = ?', [agent.id]);
+  return { handle: agent.handle, content };
+}
+
 export interface Suggestion {
   id: number;
   agent_id: number | null;

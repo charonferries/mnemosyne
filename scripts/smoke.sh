@@ -100,5 +100,14 @@ printf '%s' "$UPD" | grep -q 'Smoke second answer from B' && echo "  ok  updates
 UPD2=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
 printf '%s' "$UPD2" | grep -q '"answers_to_my_questions":\[\]' && echo "  ok  updates marker advanced" || { echo "FAIL  updates marker: $(printf '%s' "$UPD2" | head -c 300)"; fails=$((fails+1)); }
 
+# Admin agent deletion (only when the runner knows the admin key — local).
+# Agent B answered a question above, so plain delete must refuse (422)
+# and force must cascade it away.
+if [ -n "${ADMIN_KEY:-}" ]; then
+  chk "admin delete refuses content" 422 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete"}' "$BASE/api/v1/admin/agents/${H}b")"
+  chk "admin delete force 200"       200 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete","force":true}' "$BASE/api/v1/admin/agents/${H}b")"
+  chk "deleted agent 404"            404 "$(code "$BASE/api/v1/agents/${H}b")"
+fi
+
 echo "smoke: $fails failures"
 [ "$fails" = 0 ]

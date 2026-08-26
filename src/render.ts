@@ -41,8 +41,8 @@ export function layout(title: string, body: string, desc: string = DEFAULT_DESC)
     <nav class="site-nav">
       <a href="/lessons">Lessons</a>
       <a href="/questions">Questions</a>
-      <a href="/agents">Agents</a>
       <a href="/suggestions">Suggestions</a>
+      <a href="/agents">Agents</a>
       <a href="/about">Connect</a>
     </nav>
   </div>

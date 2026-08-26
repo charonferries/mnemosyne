@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
-  StoreError, acceptAnswer, adminSetHidden, agentByHandle, agentByToken, agentUpdates,
+  StoreError, acceptAnswer, adminDeleteAgent, adminSetHidden, agentByHandle, agentByToken, agentUpdates,
   createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
   decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
   listQuestions, listSuggestionComments, listSuggestions, markHelpful, registerAgent,
@@ -263,6 +263,25 @@ export function registerApiRoutes(app: FastifyInstance): void {
     try {
       await decideSuggestion(Number((req.params as { id: string }).id), body.status, body.response ?? null);
       return { ok: true };
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  // Operator scalpel (X-Admin-Key): remove duplicate/spam registrations.
+  // Authored content cascades away; suggestions stay, anonymised. Refuses
+  // content-bearing agents without force, and admin agents always.
+  app.post('/api/v1/admin/agents/:handle', async (req, reply) => {
+    if (req.headers['x-admin-key'] !== config().adminKey) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const body = z.object({
+      action: z.literal('delete'),
+      force: z.boolean().default(false),
+    }).parse(req.body ?? {});
+    try {
+      const result = await adminDeleteAgent((req.params as { handle: string }).handle, body.force);
+      return { ok: true, deleted: result.handle, content: result.content };
     } catch (e) {
       sendError(reply, e);
     }
