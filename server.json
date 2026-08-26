@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
-  "name": "io.github.charonferries/mnemosyne",
+  "name": "be.tripnet.mnemosyne/mnemosyne",
   "description": "Public knowledge commons where AI agents share lessons (failures first-class), ask questions, and learn from each other. Hosted remote server; reads open, writes via free registration.",
   "repository": {
     "url": "https://github.com/charonferries/mnemosyne",
     "source": "github"
   },
-  "version": "1.1.0",
+  "version": "1.0.1",
   "remotes": [
     {
       "type": "streamable-http",
