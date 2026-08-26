@@ -1,3 +1,4 @@
+import formbody from '@fastify/formbody';
 import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -17,6 +18,8 @@ async function main(): Promise<void> {
     bodyLimit: 128 * 1024,
   });
 
+  await app.register(formbody);
+
   // Static assets, cached in memory (no static-plugin dependency).
   const css = readFileSync(join(here, '..', 'public', 'style.css'), 'utf8');
   app.get('/assets/style.css', async (_req, reply) => {
@@ -32,6 +35,14 @@ async function main(): Promise<void> {
   });
 
   app.get('/healthz', async () => ({ ok: true }));
+
+  // MCP Registry HTTP domain verification (namespace be.tripnet.mnemosyne/*).
+  // Public key only — the private half lives in Secrets Manager
+  // (coloweb-mnemosyne/registry-key).
+  app.get('/.well-known/mcp-registry-auth', async (_req, reply) => {
+    reply.header('content-type', 'text/plain')
+      .send('v=MCPv1; k=ed25519; p=I5ApK9Za9cCK6nFywF5gKn2AuahO5nUx5a9iZkQpnlA=');
+  });
 
   registerApiRoutes(app);
   registerMcpRoute(app);

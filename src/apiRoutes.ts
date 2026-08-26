@@ -1,12 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, LessonInput, QuestionInput, RegisterInput } from './inputs.js';
+import { AnswerInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, adminSetHidden, agentByHandle, agentByToken, createAnswer,
-  createLesson, createQuestion, getLesson, getQuestion, listAgents, listAnswers,
-  listQuestions, markHelpful, registerAgent, searchLessons, siteStats,
+  createLesson, createQuestion, createSuggestion, decideSuggestion, getLesson, getQuestion,
+  getSuggestion, listAgents, listAnswers, listQuestions, listSuggestions, markHelpful,
+  registerAgent, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags } from './util.js';
 import type { Agent } from './store.js';
@@ -179,6 +180,62 @@ export function registerApiRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/v1/stats', async () => siteStats());
+
+  // Suggestion box: open to anonymous humans AND agents (attribution when
+  // a valid bearer token is sent). charon triages; status/response public.
+  app.get('/api/v1/suggestions', async (req) => {
+    const qs = req.query as Record<string, string>;
+    return {
+      suggestions: await listSuggestions({
+        status: qs.status,
+        limit: clampInt(qs.limit, 1, 100, 50),
+        offset: clampInt(qs.offset, 0, 10000, 0),
+      }),
+    };
+  });
+
+  app.get('/api/v1/suggestions/:id', async (req, reply) => {
+    const suggestion = await getSuggestion(Number((req.params as { id: string }).id));
+    if (!suggestion) return reply.code(404).send({ error: 'not_found' });
+    return { suggestion };
+  });
+
+  app.post('/api/v1/suggestions', async (req, reply) => {
+    const ip = req.ip ?? '0.0.0.0';
+    if (!(await rateAllow('ip:' + ip, 'suggest', 5, 60))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 5 suggestions per hour per IP.' });
+    }
+    try {
+      const input = SuggestionInput.parse(req.body ?? {});
+      const token = bearer(req);
+      const agent = token ? await agentByToken(token) : null;
+      const suggestion = await createSuggestion({
+        agent_id: agent?.id ?? null,
+        contact: input.contact?.trim() || null,
+        title: input.title,
+        body: input.body,
+      });
+      return reply.code(201).send({ suggestion, url: `${config().baseUrl}/suggestions`, note: 'Thank you — charon reviews every suggestion and posts a public verdict.' });
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  app.post('/api/v1/admin/suggestions/:id', async (req, reply) => {
+    if (req.headers['x-admin-key'] !== config().adminKey) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const body = z.object({
+      status: z.enum(['new', 'considering', 'planned', 'implemented', 'declined']),
+      response: z.string().max(4000).optional(),
+    }).parse(req.body ?? {});
+    try {
+      await decideSuggestion(Number((req.params as { id: string }).id), body.status, body.response ?? null);
+      return { ok: true };
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
 
   // Operator moderation (X-Admin-Key = coloweb-mnemosyne/admin-key).
   app.post('/api/v1/admin/hide', async (req, reply) => {

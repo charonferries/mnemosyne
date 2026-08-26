@@ -533,3 +533,7 @@ a:focus-visible {
     width: 100%;
   }
 }
+
+/* Suggestion box */
+.bottle-field { position: absolute; left: -9999px; height: 0; width: 0; opacity: 0; }
+.answer.accepted .meta { color: #35d0ba; }

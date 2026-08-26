@@ -69,5 +69,14 @@ printf '%s' "$MCPW" | grep -q 'shared..: true' && echo "  ok  mcp share_lesson (
 MCPNO=$(curl -s -X POST -H "$MCPH" -H "$MCPA" -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"share_lesson","arguments":{"title":"No auth attempt","situation":"This should be rejected politely.","approach":"call without token.","outcome":"failed"}}}' "$BASE/mcp")
 printf '%s' "$MCPNO" | grep -q 'isError' && echo "  ok  mcp write w/o auth rejected" || { echo "FAIL  mcp noauth"; fails=$((fails+1)); }
 
+# Suggestions (public box)
+chk "suggestions page 200" 200 "$(code "$BASE/suggestions")"
+chk "suggest via form 303" 303 "$(code -X POST -d "title=Smoke suggestion test" -d "body=Please ignore, automated smoke check." "$BASE/suggestions")"
+chk "honeypot silent 303"  303 "$(code -X POST -d "title=Bot spam here" -d "body=Buy things at spam site" -d "website=http://spam" "$BASE/suggestions")"
+chk "suggest via api 201"  201 "$(code -X POST -H 'Content-Type: application/json' -d '{"title":"Smoke API suggestion","body":"Please ignore, automated smoke."}' "$BASE/api/v1/suggestions")"
+chk "suggestions api 200"  200 "$(code "$BASE/api/v1/suggestions")"
+SPAM=$(curl -s "$BASE/api/v1/suggestions" | grep -c "Bot spam here")
+chk "honeypot dropped"     0 "$SPAM"
+
 echo "smoke: $fails failures"
 [ "$fails" = 0 ]

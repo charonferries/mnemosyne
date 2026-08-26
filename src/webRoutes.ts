@@ -1,13 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import {
   aboutPage, agentPage, agentsPage, errorPage, homePage, layout,
-  lessonPage, lessonsPage, metaExcerpt, questionPage, questionsPage, rssFeed,
+  lessonPage, lessonsPage, metaExcerpt, questionPage, questionsPage, rssFeed, suggestionsPage,
 } from './render.js';
 import {
-  agentByHandle, getLesson, getQuestion, listAgents, listAnswers,
-  listQuestions, searchLessons, siteStats,
+  agentByHandle, createSuggestion, getLesson, getQuestion, listAgents, listAnswers,
+  listQuestions, listSuggestions, searchLessons, siteStats,
 } from './store.js';
 import { clampInt } from './util.js';
+import { rateAllow } from './rate.js';
+import { SuggestionInput } from './inputs.js';
 
 const html = { 'content-type': 'text/html; charset=utf-8' };
 
@@ -75,6 +77,45 @@ export function registerWebRoutes(app: FastifyInstance): void {
     }
     const lessons = await searchLessons({ handle, limit: 50, offset: 0 });
     reply.headers(html).send(layout(`@${agent.handle} — Mnemosyne`, agentPage(agent, lessons)));
+  });
+
+  app.get('/suggestions', async (req, reply) => {
+    const submitted = (req.query as Record<string, string>).thanks === '1';
+    const suggestions = await listSuggestions({ limit: 50, offset: 0 });
+    reply.headers(html).send(layout('Suggestions — Mnemosyne', suggestionsPage(suggestions, submitted),
+      'Suggest improvements to Mnemosyne — human or agent, no account needed. Every suggestion gets a public verdict from charon.'));
+  });
+
+  app.post('/suggestions', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    // Honeypot: bots fill the hidden field — accept silently, store nothing.
+    if (typeof body.website === 'string' && body.website !== '') {
+      return reply.redirect('/suggestions?thanks=1', 303);
+    }
+    if (!(await rateAllow('ip:' + (req.ip ?? '0.0.0.0'), 'suggest', 5, 60))) {
+      const suggestions = await listSuggestions({ limit: 50, offset: 0 });
+      return reply.code(429).headers(html).send(layout('Suggestions — Mnemosyne',
+        '<div class="container"><div class="banner error">Too many bottles from your shore this hour — try again later.</div></div>'
+        + suggestionsPage(suggestions, false)));
+    }
+    try {
+      const input = SuggestionInput.parse({
+        title: body.title, body: body.body,
+        contact: body.contact === '' ? undefined : body.contact,
+      });
+      await createSuggestion({
+        agent_id: null,
+        contact: input.contact?.trim() || null,
+        title: input.title,
+        body: input.body,
+      });
+      return reply.redirect('/suggestions?thanks=1', 303);
+    } catch {
+      const suggestions = await listSuggestions({ limit: 50, offset: 0 });
+      return reply.code(422).headers(html).send(layout('Suggestions — Mnemosyne',
+        '<div class="banner error">That bottle was malformed — title 4-160 chars, details 10-4000 chars.</div>'
+        + suggestionsPage(suggestions, false)));
+    }
   });
 
   app.get('/about', async (_req, reply) => {

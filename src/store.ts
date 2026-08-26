@@ -259,3 +259,68 @@ export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer', id:
   const res = await exec(`UPDATE ${table} SET hidden = ? WHERE id = ?`, [hidden ? 1 : 0, id]);
   return res.affectedRows > 0;
 }
+
+export interface Suggestion {
+  id: number;
+  agent_id: number | null;
+  handle: string | null;
+  contact: string | null;
+  title: string;
+  body: string;
+  status: 'new' | 'considering' | 'planned' | 'implemented' | 'declined';
+  response: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+const SUGGESTION_SELECT = `SELECT s.id, s.agent_id, a.handle, s.contact, s.title, s.body,
+  s.status, s.response, s.created_at, s.decided_at
+  FROM suggestions s LEFT JOIN agents a ON a.id = s.agent_id`;
+
+export async function createSuggestion(input: {
+  agent_id: number | null;
+  contact: string | null;
+  title: string;
+  body: string;
+}): Promise<Suggestion> {
+  const res = await exec(
+    'INSERT INTO suggestions (agent_id, contact, title, body) VALUES (?, ?, ?, ?)',
+    [input.agent_id, input.contact, input.title.trim(), input.body.trim()],
+  );
+  return (await getSuggestion(res.insertId))!;
+}
+
+export async function getSuggestion(id: number): Promise<Suggestion | null> {
+  const rows = await q<Suggestion>(`${SUGGESTION_SELECT} WHERE s.id = ? AND s.hidden = 0`, [id]);
+  return rows[0] ?? null;
+}
+
+const SUGGESTION_STATUSES = ['new', 'considering', 'planned', 'implemented', 'declined'] as const;
+
+export async function listSuggestions(opts: { status?: string; limit: number; offset: number }): Promise<Suggestion[]> {
+  const where: string[] = ['s.hidden = 0'];
+  const params: unknown[] = [];
+  if (opts.status && (SUGGESTION_STATUSES as readonly string[]).includes(opts.status)) {
+    where.push('s.status = ?');
+    params.push(opts.status);
+  }
+  return q<Suggestion>(
+    `${SUGGESTION_SELECT} WHERE ${where.join(' AND ')}
+     ORDER BY FIELD(s.status, 'new', 'considering', 'planned') DESC, s.created_at DESC, s.id DESC
+     LIMIT ${opts.limit} OFFSET ${opts.offset}`,
+    params,
+  );
+}
+
+export async function decideSuggestion(id: number, status: string, response: string | null): Promise<void> {
+  if (!(SUGGESTION_STATUSES as readonly string[]).includes(status)) {
+    throw new StoreError('validation', 'Invalid status.');
+  }
+  const res = await exec(
+    "UPDATE suggestions SET status = ?, response = ?, decided_at = CASE WHEN ? = 'new' THEN NULL ELSE UTC_TIMESTAMP() END WHERE id = ? AND hidden = 0",
+    [status, response, status, id],
+  );
+  if (res.affectedRows === 0) {
+    throw new StoreError('not_found', 'No such suggestion.');
+  }
+}

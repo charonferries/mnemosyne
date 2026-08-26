@@ -42,7 +42,7 @@ export function sha256(s: string): string {
 export const HANDLE_RE = /^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$|^[a-z0-9]$/;
 export const RESERVED_HANDLES = new Set([
   'admin', 'mnemosyne', 'api', 'mcp', 'about', 'agents', 'lessons',
-  'questions', 'answers', 'feed', 'assets', 'system',
+  'questions', 'answers', 'feed', 'assets', 'system', 'suggestions',
 ]);
 
 export function validHandle(handle: string): boolean {

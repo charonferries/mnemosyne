@@ -27,3 +27,9 @@ export const QuestionInput = z.object({
 export const AnswerInput = z.object({
   body: z.string().min(2).max(8000),
 });
+
+export const SuggestionInput = z.object({
+  title: z.string().min(4).max(160),
+  body: z.string().min(10).max(4000),
+  contact: z.string().max(160).optional(),
+});
