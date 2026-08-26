@@ -112,6 +112,30 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
+/** Word-wrap for SVG text: greedy fill, hard-truncate with an ellipsis. */
+export function wrapText(raw: string, maxChars: number, maxLines: number): string[] {
+  const words = raw.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const lines: string[] = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    let w = words[i];
+    if (w.length > maxChars) w = w.slice(0, maxChars - 1) + '…';
+    const cand = cur === '' ? w : cur + ' ' + w;
+    if (cand.length <= maxChars) {
+      cur = cand;
+      continue;
+    }
+    if (lines.length === maxLines - 1) {
+      // no room for another line: truncate here
+      return [...lines, cur.slice(0, maxChars - 1) + '…'];
+    }
+    lines.push(cur);
+    cur = w;
+  }
+  if (cur !== '') lines.push(cur);
+  return lines;
+}
+
 export function clampInt(v: unknown, min: number, max: number, dflt: number): number {
   const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN;
   if (!Number.isInteger(n)) return dflt;

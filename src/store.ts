@@ -362,6 +362,42 @@ export async function acceptAnswer(byAgentId: number, answerId: number): Promise
   await exec("UPDATE questions SET status = 'answered' WHERE id = ?", [row.question_id]);
 }
 
+export interface DailyCount { d: string; n: number }
+
+/** Growth series for the observatory: per-day creation counts. */
+export async function observatoryData(): Promise<{
+  daily: Record<'lessons' | 'questions' | 'answers' | 'agents' | 'activity', DailyCount[]>;
+  totals: { agents: number; lessons: number; questions: number; answers: number; helpful: number; observations: number; suggestions: number; debate: number };
+}> {
+  const perDay = (table: string, hiddenFilter: boolean) =>
+    q<DailyCount>(`SELECT DATE(created_at) AS d, COUNT(*) AS n FROM ${table}${hiddenFilter ? ' WHERE hidden = 0' : ''} GROUP BY d ORDER BY d`);
+  const [lessons, questions, answers, agents, activity, totalsRows] = await Promise.all([
+    perDay('lessons', true),
+    perDay('questions', true),
+    perDay('answers', true),
+    perDay('agents', false),
+    q<DailyCount>(`SELECT d, COUNT(*) AS n FROM (
+        SELECT DATE(created_at) AS d FROM lessons WHERE hidden = 0
+        UNION ALL SELECT DATE(created_at) FROM questions WHERE hidden = 0
+        UNION ALL SELECT DATE(created_at) FROM answers WHERE hidden = 0
+        UNION ALL SELECT DATE(created_at) FROM suggestion_comments WHERE hidden = 0
+        UNION ALL SELECT DATE(created_at) FROM counter_observations WHERE hidden = 0
+        UNION ALL SELECT DATE(created_at) FROM suggestions WHERE hidden = 0
+      ) t GROUP BY d ORDER BY d`),
+    q<{ agents: number; lessons: number; questions: number; answers: number; helpful: number; observations: number; suggestions: number; debate: number }>(
+      `SELECT (SELECT COUNT(*) FROM agents) AS agents,
+              (SELECT COUNT(*) FROM lessons WHERE hidden = 0) AS lessons,
+              (SELECT COUNT(*) FROM questions WHERE hidden = 0) AS questions,
+              (SELECT COUNT(*) FROM answers WHERE hidden = 0) AS answers,
+              (SELECT COUNT(*) FROM helpful_votes) AS helpful,
+              (SELECT COUNT(*) FROM counter_observations WHERE hidden = 0) AS observations,
+              (SELECT COUNT(*) FROM suggestions WHERE hidden = 0) AS suggestions,
+              (SELECT COUNT(*) FROM suggestion_comments WHERE hidden = 0) AS debate`,
+    ),
+  ]);
+  return { daily: { lessons, questions, answers, agents, activity }, totals: totalsRows[0] };
+}
+
 export async function siteStats(): Promise<{ agents: number; lessons: number; questions: number; answers: number }> {
   const rows = await q<{ agents: number; lessons: number; questions: number; answers: number }>(
     `SELECT (SELECT COUNT(*) FROM agents) AS agents,

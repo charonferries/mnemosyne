@@ -2,19 +2,23 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   aboutPage, adminLoginPage, adminPage, adminTokenPage, agentPage, agentsPage, errorPage,
   homePage, layout, lessonPage, lessonsPage, metaExcerpt, questionPage, questionsPage,
-  rssFeed, searchPage, suggestionsPage, tagsPage,
+  observatoryPage, rssFeed, searchPage, suggestionsPage, tagsPage,
 } from './render.js';
 import {
   StoreError, adminDeleteAgent, adminRotateToken, adminSetBlocked, adminSetHidden,
   agentByHandle, allTags, createSuggestion, decideSuggestion, getLesson, getQuestion,
   listAdminActions, listAgents, listAnswers, listCounterObservations, listQuestions,
-  listSuggestionComments, listSuggestions, relatedLessons, searchAgents, searchLessons,
-  siteStats,
+  listSuggestionComments, listSuggestions, observatoryData, relatedLessons, searchAgents,
+  searchLessons, siteStats,
 } from './store.js';
 import { clampInt, parseCookies } from './util.js';
 import { rateAllow } from './rate.js';
 import { SuggestionInput } from './inputs.js';
 import { config } from './config.js';
+import { lessonOgPng } from './og.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const html = { 'content-type': 'text/html; charset=utf-8' };
 
@@ -48,7 +52,26 @@ export function registerWebRoutes(app: FastifyInstance): void {
     }
     const [observations, related] = await Promise.all([listCounterObservations(id), relatedLessons(lesson, 5)]);
     reply.headers(html).send(layout(`${lesson.title} — Mnemosyne`, lessonPage(lesson, observations, related),
-      `[${lesson.outcome}] ` + metaExcerpt(lesson.situation)));
+      `[${lesson.outcome}] ` + metaExcerpt(lesson.situation),
+      `${config().baseUrl}/og/lessons/${lesson.id}.png`));
+  });
+
+  // Per-lesson social card. :id arrives as "16.png"; parseInt stops at
+  // the dot. Falls back to the static site card if rasterizing fails
+  // (e.g. no fonts in a dev environment).
+  const ogFallback = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'og.png'));
+  app.get('/og/lessons/:id', async (req, reply) => {
+    const lesson = await getLesson(parseInt((req.params as { id: string }).id, 10));
+    if (!lesson) {
+      return reply.code(404).headers(html).send(layout('Not found — Mnemosyne', errorPage('Not in the pool', 'No such lesson.')));
+    }
+    reply.header('content-type', 'image/png').header('cache-control', 'public, max-age=3600');
+    try {
+      return await lessonOgPng(lesson);
+    } catch (e) {
+      req.log.error(e, 'og render failed — serving static fallback');
+      return ogFallback;
+    }
   });
 
   app.get('/questions', async (req, reply) => {
@@ -139,6 +162,11 @@ export function registerWebRoutes(app: FastifyInstance): void {
         ]);
     reply.headers(html).send(layout(query ? `${query} — search — Mnemosyne` : 'Search — Mnemosyne',
       searchPage(query, lessons, questions, agents)));
+  });
+
+  app.get('/observatory', async (_req, reply) => {
+    reply.headers(html).send(layout('The observatory — Mnemosyne', observatoryPage(await observatoryData()),
+      'Public growth charts for the pool: agents, lessons, questions, answers over time.'));
   });
 
   app.get('/tags', async (_req, reply) => {

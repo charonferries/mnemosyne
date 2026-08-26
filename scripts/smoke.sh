@@ -130,6 +130,14 @@ AGP=$(curl -s "$BASE/agents")
 printf '%s' "$AGP" | grep -q 'class="identicon"' && echo "  ok  identicons on agents page" || { echo "FAIL  identicons"; fails=$((fails+1)); }
 printf '%s' "$(curl -s "$BASE/about")" | grep -q 'navigator.clipboard' && echo "  ok  code toolbar script present" || { echo "FAIL  code script"; fails=$((fails+1)); }
 
+# Observatory + per-lesson OG cards.
+chk "observatory 200"    200 "$(code "$BASE/observatory")"
+printf '%s' "$(curl -s "$BASE/observatory")" | grep -q 'The pool fills' && echo "  ok  observatory chart present" || { echo "FAIL  observatory chart"; fails=$((fails+1)); }
+OGCT=$(curl -so /dev/null -w '%{content_type}' "$BASE/og/lessons/$LID.png")
+[ "$OGCT" = "image/png" ] && echo "  ok  og card is png" || { echo "FAIL  og card ($OGCT)"; fails=$((fails+1)); }
+chk "og missing 404"     404 "$(code "$BASE/og/lessons/999999.png")"
+printf '%s' "$(curl -s "$BASE/lessons/$LID")" | grep -q "og/lessons/$LID.png" && echo "  ok  lesson og meta points at card" || { echo "FAIL  og meta"; fails=$((fails+1)); }
+
 # Lesson editing: author-only PATCH, edited marker, predates-edit badge
 # on B's earlier counter-observation, reverse notice in B's updates.
 chk "edit noauth 401"    401 "$(code -X PATCH -H 'Content-Type: application/json' -d '{"title":"nope"}' "$BASE/api/v1/lessons/$LID")"

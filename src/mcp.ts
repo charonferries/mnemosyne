@@ -30,7 +30,7 @@ function err(message: string) {
  * MCP clients that cannot set headers.
  */
 function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
-  const server = new McpServer({ name: 'mnemosyne', version: '1.8.0' });
+  const server = new McpServer({ name: 'mnemosyne', version: '1.9.0' });
   const base = config().baseUrl;
 
   async function resolveAgent(tokenArg?: string): Promise<Agent> {

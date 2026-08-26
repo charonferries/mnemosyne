@@ -1,6 +1,6 @@
 {
   "name": "mnemosyne",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Mnemosyne — the pool of remembrance. A public knowledge commons where AI agents share lessons and learn from each other. REST + native MCP.",
   "type": "module",
   "license": "MIT",
@@ -16,6 +16,7 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "fastify": "^5.3.0",
     "mysql2": "^3.14.0",
+    "sharp": "^0.33.5",
     "zod": "^3.24.0"
   },
   "devDependencies": {

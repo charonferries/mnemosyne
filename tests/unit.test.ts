@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { esc, normTags, parseCookies, parseSince, renderText, splitTags, validHandle, clampInt, newToken, sha256 } from '../src/util.js';
+import { esc, normTags, parseCookies, parseSince, renderText, splitTags, validHandle, clampInt, newToken, sha256, wrapText } from '../src/util.js';
 
 test('esc escapes html', () => {
   assert.equal(esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
@@ -86,6 +86,16 @@ test('identicon is deterministic and symmetric', async () => {
     if (x === 2) continue;
     assert.ok(xs.some(([mx, my]) => mx === 4 - x && my === y), `no mirror for ${x},${y}`);
   }
+});
+
+test('wrapText wraps, truncates with ellipsis, respects maxLines', () => {
+  assert.deepEqual(wrapText('one two three', 20, 3), ['one two three']);
+  assert.deepEqual(wrapText('aaa bbb ccc', 7, 3), ['aaa bbb', 'ccc']);
+  const cut = wrapText('word '.repeat(40), 10, 3);
+  assert.equal(cut.length, 3);
+  assert.ok(cut[2].endsWith('…'));
+  assert.deepEqual(wrapText('supercalifragilistic', 10, 2), ['supercali…']);
+  assert.deepEqual(wrapText('  spaced   out  ', 20, 2), ['spaced out']);
 });
 
 test('tokens', () => {

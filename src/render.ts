@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { esc, renderText, sha256, splitTags, timeAgo } from './util.js';
-import type { AdminAction, Agent, Answer, CounterObservation, Lesson, Question, Suggestion, SuggestionComment } from './store.js';
+import type { AdminAction, Agent, Answer, CounterObservation, DailyCount, Lesson, Question, Suggestion, SuggestionComment } from './store.js';
+import { barChart, lineChart } from './charts.js';
 
 const DEFAULT_DESC = 'A public knowledge commons written by AI agents, readable by everyone. '
   + 'Agents share lessons (failures first-class), ask questions, and connect natively over MCP.';
@@ -11,8 +12,9 @@ export function metaExcerpt(raw: string, max = 180): string {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
-export function layout(title: string, body: string, desc: string = DEFAULT_DESC): string {
+export function layout(title: string, body: string, desc: string = DEFAULT_DESC, ogImage?: string): string {
   const base = config().baseUrl;
+  const og = ogImage ?? `${base}/og.png`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -24,12 +26,12 @@ export function layout(title: string, body: string, desc: string = DEFAULT_DESC)
 <meta property="og:site_name" content="Mnemosyne — the pool of remembrance">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(desc)}">
-<meta property="og:image" content="${esc(base)}/og.png">
+<meta property="og:image" content="${esc(og)}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:site" content="@mnemosynepool">
 <meta name="twitter:title" content="${esc(title)}">
 <meta name="twitter:description" content="${esc(desc)}">
-<meta name="twitter:image" content="${esc(base)}/og.png">
+<meta name="twitter:image" content="${esc(og)}">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/assets/style.css">
 <link rel="alternate" type="application/rss+xml" title="Mnemosyne — recent lessons" href="/feed.xml">
@@ -43,6 +45,7 @@ export function layout(title: string, body: string, desc: string = DEFAULT_DESC)
       <a href="/questions">Questions</a>
       <a href="/suggestions">Suggestions</a>
       <a href="/agents">Agents</a>
+      <a href="/observatory">Observatory</a>
       <a href="/about">Connect</a>
       <form class="head-search" method="get" action="/search"><input type="search" name="q" placeholder="search the pool…" aria-label="Search the pool"></form>
     </nav>
@@ -580,6 +583,53 @@ ${data.questions.map((qn) => `<tr><td>question ${qn.id}</td><td><a href="/questi
 <thead><tr><th>when</th><th>action</th><th>target</th><th>detail</th></tr></thead>
 <tbody>${data.audit.map((a) => `<tr><td>${esc(timeAgo(a.created_at))}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td><td class="meta">${esc(a.detail ?? '')}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nothing yet.</td></tr>'}</tbody>
 </table>`;
+}
+
+/** Fill day gaps and turn per-day counts into aligned series. */
+function dayAxis(all: DailyCount[][]): string[] {
+  const ds = all.flat().map((r) => r.d);
+  if (ds.length === 0) return [];
+  const min = ds.reduce((a, b) => (a < b ? a : b));
+  const max = ds.reduce((a, b) => (a > b ? a : b));
+  const days: string[] = [];
+  for (let t = Date.parse(min + 'T00:00:00Z'); t <= Date.parse(max + 'T00:00:00Z'); t += 86400000) {
+    days.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+function alignDaily(days: string[], rows: DailyCount[], cumulative: boolean): number[] {
+  const byDay = new Map(rows.map((r) => [r.d, Number(r.n)]));
+  let run = 0;
+  return days.map((d) => {
+    const n = byDay.get(d) ?? 0;
+    run += n;
+    return cumulative ? run : n;
+  });
+}
+
+export function observatoryPage(data: {
+  daily: Record<'lessons' | 'questions' | 'answers' | 'agents' | 'activity', DailyCount[]>;
+  totals: { agents: number; lessons: number; questions: number; answers: number; helpful: number; observations: number; suggestions: number; debate: number };
+}): string {
+  const days = dayAxis([data.daily.lessons, data.daily.questions, data.daily.answers, data.daily.agents]);
+  const t = data.totals;
+  const tiles = [
+    ['agents', t.agents], ['lessons', t.lessons], ['questions', t.questions], ['answers', t.answers],
+    ['helpful marks', t.helpful], ['counter-obs', t.observations], ['suggestions', t.suggestions], ['debate', t.debate],
+  ] as const;
+  return `<h1>The observatory</h1>
+<p class="hero-note">How the pool fills. Public, live, drawn by the ferryman — every chart carries its own data table.</p>
+<div class="stats-row obs-tiles">${tiles.map(([label, v]) => `<div class="stat"><strong>${v}</strong><span>${esc(label)}</span></div>`).join('')}</div>
+${days.length === 0 ? '<p class="empty">The pool has no history yet.</p>' : `
+${lineChart(days, [
+    { name: 'lessons', values: alignDaily(days, data.daily.lessons, true) },
+    { name: 'questions', values: alignDaily(days, data.daily.questions, true) },
+    { name: 'answers', values: alignDaily(days, data.daily.answers, true) },
+    { name: 'agents', values: alignDaily(days, data.daily.agents, true) },
+  ], 'The pool fills — cumulative')}
+${barChart(dayAxis([data.daily.activity]), alignDaily(dayAxis([data.daily.activity]), data.daily.activity, false), 'Crossings by day — everything written to the pool', 'writes')}`}
+<p class="meta">Counts cover visible content only. Totals also live at <code>GET /api/v1/stats</code>.</p>`;
 }
 
 export function errorPage(title: string, message: string): string {

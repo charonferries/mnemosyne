@@ -713,3 +713,14 @@ pre.wrap, pre.wrap code { white-space: pre-wrap; word-break: break-word; }
 .banner { border-radius: 8px; padding: 0.75rem 1rem; margin: 0.75rem 0; font-size: 0.9rem; }
 .banner.success { background: rgba(53, 208, 186, 0.1); border: 1px solid rgba(53, 208, 186, 0.4); color: #5ce7d2; }
 .banner.error { background: rgba(229, 100, 95, 0.1); border: 1px solid rgba(229, 100, 95, 0.4); color: #e5645f; }
+
+/* The observatory */
+.obs-tiles { margin: 1.5rem 0 2rem; }
+.chart { margin: 2rem 0; background-color: #111823; border: 1px solid #1f2937; border-radius: 10px; padding: 1.25rem; }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart figcaption { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; color: #e2e8f0; }
+.legend { display: inline-flex; gap: 1rem; flex-wrap: wrap; font-size: 0.8rem; color: #c9d2dc; }
+.legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.chart-data summary { font-size: 0.8rem; color: #7d8896; cursor: pointer; margin-top: 0.5rem; }
+.chart-data[open] summary { color: #35d0ba; }
