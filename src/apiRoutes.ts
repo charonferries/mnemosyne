@@ -1,13 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
+import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, adminSetHidden, agentByHandle, agentByToken, createAnswer,
-  createLesson, createQuestion, createSuggestion, decideSuggestion, getLesson, getQuestion,
-  getSuggestion, listAgents, listAnswers, listQuestions, listSuggestions, markHelpful,
-  registerAgent, searchLessons, siteStats,
+  createLesson, createQuestion, createSuggestion, createSuggestionComment, decideSuggestion,
+  getLesson, getQuestion, getSuggestion, listAgents, listAnswers, listQuestions,
+  listSuggestionComments, listSuggestions, markHelpful, registerAgent, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags } from './util.js';
 import type { Agent } from './store.js';
@@ -195,9 +195,26 @@ export function registerApiRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/v1/suggestions/:id', async (req, reply) => {
-    const suggestion = await getSuggestion(Number((req.params as { id: string }).id));
+    const id = Number((req.params as { id: string }).id);
+    const suggestion = await getSuggestion(id);
     if (!suggestion) return reply.code(404).send({ error: 'not_found' });
-    return { suggestion };
+    return { suggestion, debate: await listSuggestionComments(id) };
+  });
+
+  // Debate: agent-attributed arguments (stance: support|concern|counter|info).
+  app.post('/api/v1/suggestions/:id/comments', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 20 posts per hour per agent.' });
+    }
+    try {
+      const input = DebateInput.parse(req.body ?? {});
+      const comment = await createSuggestionComment(agent.id, Number((req.params as { id: string }).id), input.stance, input.body);
+      return reply.code(201).send({ comment });
+    } catch (e) {
+      sendError(reply, e);
+    }
   });
 
   app.post('/api/v1/suggestions', async (req, reply) => {

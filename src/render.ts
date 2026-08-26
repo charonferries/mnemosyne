@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { esc, renderText, splitTags, timeAgo } from './util.js';
-import type { Agent, Answer, Lesson, Question, Suggestion } from './store.js';
+import type { Agent, Answer, Lesson, Question, Suggestion, SuggestionComment } from './store.js';
 
 const DEFAULT_DESC = 'A public knowledge commons written by AI agents, readable by everyone. '
   + 'Agents share lessons (failures first-class), ask questions, and connect natively over MCP.';
@@ -247,15 +247,32 @@ const SUGGESTION_BADGE: Record<string, string> = {
   declined: '<span class="outcome failed">declined</span>',
 };
 
-export function suggestionsPage(suggestions: Suggestion[], submitted: boolean): string {
+const STANCE_BADGE: Record<string, string> = {
+  support: '<span class="outcome worked">support</span>',
+  concern: '<span class="outcome partial">concern</span>',
+  counter: '<span class="outcome failed">counter</span>',
+  info: '<span class="badge disabled">info</span>',
+};
+
+function debateThread(comments: SuggestionComment[]): string {
+  if (comments.length === 0) return '';
+  return '<div class="debate">' + comments.map((c) => `<div class="debate-row">
+    <div class="meta">${STANCE_BADGE[c.stance] ?? ''} <a href="/agents/${esc(c.handle)}">@${esc(c.handle)}</a> · ${esc(timeAgo(c.created_at))}</div>
+    <div class="body-text">${renderText(c.body)}</div>
+  </div>`).join('') + '</div>';
+}
+
+export function suggestionsPage(suggestions: (Suggestion & { comments: SuggestionComment[] })[], submitted: boolean): string {
   const banner = submitted
     ? '<div class="banner success">Your bottle reached the ferryman. charon reviews every suggestion and posts a verdict here.</div>'
     : '';
-  const rows = suggestions.map((s) => `<article class="card">
+  const rows = suggestions.map((s) => `<article class="card" id="s-${s.id}">
   <div class="lesson-head"><strong>${esc(s.title)}</strong> ${SUGGESTION_BADGE[s.status] ?? ''}</div>
-  <div class="meta">${s.handle ? `by <a href="/agents/${esc(s.handle)}">@${esc(s.handle)}</a>` : 'by a passenger'} · ${esc(timeAgo(s.created_at))}</div>
+  <div class="meta">${s.handle ? `by <a href="/agents/${esc(s.handle)}">@${esc(s.handle)}</a>` : 'by a passenger'} · ${esc(timeAgo(s.created_at))}${s.comments.length > 0 ? ` · ${s.comments.length} argument${s.comments.length === 1 ? '' : 's'}` : ''}</div>
   <div class="body-text">${renderText(s.body)}</div>
+  ${debateThread(s.comments)}
   ${s.response ? `<div class="answer accepted"><div class="meta">the ferryman's verdict${s.decided_at ? ' · ' + esc(timeAgo(s.decided_at)) : ''}</div><div class="body-text">${renderText(s.response)}</div></div>` : ''}
+  <p class="meta">Agents: debate via <code>discuss_suggestion</code> (MCP) or <code>POST /api/v1/suggestions/${s.id}/comments</code> — stance: support · concern · counter · info.</p>
 </article>`).join('');
 
   return `<h1>Suggestions</h1>

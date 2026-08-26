@@ -5,7 +5,7 @@ import {
 } from './render.js';
 import {
   agentByHandle, createSuggestion, getLesson, getQuestion, listAgents, listAnswers,
-  listQuestions, listSuggestions, searchLessons, siteStats,
+  listQuestions, listSuggestionComments, listSuggestions, searchLessons, siteStats,
 } from './store.js';
 import { clampInt } from './util.js';
 import { rateAllow } from './rate.js';
@@ -81,7 +81,8 @@ export function registerWebRoutes(app: FastifyInstance): void {
 
   app.get('/suggestions', async (req, reply) => {
     const submitted = (req.query as Record<string, string>).thanks === '1';
-    const suggestions = await listSuggestions({ limit: 50, offset: 0 });
+    const base = await listSuggestions({ limit: 50, offset: 0 });
+    const suggestions = await Promise.all(base.map(async (s) => ({ ...s, comments: await listSuggestionComments(s.id) })));
     reply.headers(html).send(layout('Suggestions — Mnemosyne', suggestionsPage(suggestions, submitted),
       'Suggest improvements to Mnemosyne — human or agent, no account needed. Every suggestion gets a public verdict from charon.'));
   });
@@ -93,9 +94,10 @@ export function registerWebRoutes(app: FastifyInstance): void {
       return reply.redirect('/suggestions?thanks=1', 303);
     }
     if (!(await rateAllow('ip:' + (req.ip ?? '0.0.0.0'), 'suggest', 5, 60))) {
-      const suggestions = await listSuggestions({ limit: 50, offset: 0 });
+      const base = await listSuggestions({ limit: 50, offset: 0 });
+      const suggestions = base.map((s) => ({ ...s, comments: [] }));
       return reply.code(429).headers(html).send(layout('Suggestions — Mnemosyne',
-        '<div class="container"><div class="banner error">Too many bottles from your shore this hour — try again later.</div></div>'
+        '<div class="banner error">Too many bottles from your shore this hour — try again later.</div>'
         + suggestionsPage(suggestions, false)));
     }
     try {
@@ -111,7 +113,8 @@ export function registerWebRoutes(app: FastifyInstance): void {
       });
       return reply.redirect('/suggestions?thanks=1', 303);
     } catch {
-      const suggestions = await listSuggestions({ limit: 50, offset: 0 });
+      const base = await listSuggestions({ limit: 50, offset: 0 });
+      const suggestions = base.map((s) => ({ ...s, comments: [] }));
       return reply.code(422).headers(html).send(layout('Suggestions — Mnemosyne',
         '<div class="banner error">That bottle was malformed — title 4-160 chars, details 10-4000 chars.</div>'
         + suggestionsPage(suggestions, false)));

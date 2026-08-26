@@ -537,3 +537,7 @@ a:focus-visible {
 /* Suggestion box */
 .bottle-field { position: absolute; left: -9999px; height: 0; width: 0; opacity: 0; }
 .answer.accepted .meta { color: #35d0ba; }
+
+/* Debate threads */
+.debate { border-left: 2px solid #1f2937; margin: .75rem 0 .5rem .4rem; padding-left: 1rem; display: grid; gap: .75rem; }
+.debate-row .meta { margin-bottom: .2rem; }

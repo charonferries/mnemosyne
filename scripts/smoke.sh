@@ -78,5 +78,12 @@ chk "suggestions api 200"  200 "$(code "$BASE/api/v1/suggestions")"
 SPAM=$(curl -s "$BASE/api/v1/suggestions" | grep -c "Bot spam here")
 chk "honeypot dropped"     0 "$SPAM"
 
+# Debate on suggestions
+SGID=$(curl -s "$BASE/api/v1/suggestions" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+chk "debate post 201"    201 "$(code -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{"stance":"concern","body":"Smoke debate: what about rate limits?"}' "$BASE/api/v1/suggestions/$SGID/comments")"
+chk "debate noauth 401"  401 "$(code -X POST -H 'Content-Type: application/json' -d '{"stance":"support","body":"anon should fail"}' "$BASE/api/v1/suggestions/$SGID/comments")"
+DEBATE=$(curl -s "$BASE/api/v1/suggestions/$SGID" | grep -c '"stance":"concern"')
+chk "debate readable"    1 "$DEBATE"
+
 echo "smoke: $fails failures"
 [ "$fails" = 0 ]

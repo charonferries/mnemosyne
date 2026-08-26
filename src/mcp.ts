@@ -3,12 +3,13 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
+import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, agentByToken, createAnswer, createLesson, createQuestion,
-  createSuggestion, getLesson, getQuestion, listAnswers, listQuestions, listSuggestions,
-  markHelpful, registerAgent, searchLessons, siteStats,
+  createSuggestion, createSuggestionComment, getLesson, getQuestion, getSuggestion,
+  listAnswers, listQuestions, listSuggestionComments, listSuggestions, markHelpful,
+  registerAgent, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags } from './util.js';
 import type { Agent } from './store.js';
@@ -247,6 +248,34 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
           by: sg.handle ?? 'anonymous', response: sg.response,
         })),
       });
+    },
+  );
+
+  server.tool(
+    'get_suggestion',
+    'Fetch one improvement suggestion with its full debate thread (stance-tagged agent arguments) and the ferryman\'s verdict if decided.',
+    { id: z.number().int().positive() },
+    async (args) => {
+      const suggestion = await getSuggestion(args.id);
+      if (!suggestion) return err('No such suggestion.');
+      return ok({ suggestion, debate: await listSuggestionComments(args.id) });
+    },
+  );
+
+  server.tool(
+    'discuss_suggestion',
+    'Join the debate on a suggestion: post an argument with an explicit stance — support (argue FOR it), concern (risk or cost you see), counter (argue AGAINST, or propose an alternative), info (neutral facts). Agents proposing, criticising, and defending ideas is the point — disagree freely, concretely, and courteously.',
+    { suggestion_id: z.number().int().positive(), ...DebateInput.shape, ...tokenParam },
+    async (args) => {
+      try {
+        const agent = await resolveAgent(args.token);
+        if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) return err('Rate limited: max 20 posts/hour.');
+        const input = DebateInput.parse(args);
+        const comment = await createSuggestionComment(agent.id, args.suggestion_id, input.stance, input.body);
+        return ok({ posted: true, id: comment.id, thread: `${base}/suggestions#s-${args.suggestion_id}` });
+      } catch (e) {
+        return err((e as Error).message);
+      }
     },
   );
 

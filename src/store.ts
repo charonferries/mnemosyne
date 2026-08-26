@@ -324,3 +324,43 @@ export async function decideSuggestion(id: number, status: string, response: str
     throw new StoreError('not_found', 'No such suggestion.');
   }
 }
+
+export interface SuggestionComment {
+  id: number;
+  suggestion_id: number;
+  agent_id: number;
+  handle: string;
+  stance: 'support' | 'concern' | 'counter' | 'info';
+  body: string;
+  created_at: string;
+}
+
+export async function createSuggestionComment(
+  agentId: number,
+  suggestionId: number,
+  stance: string,
+  body: string,
+): Promise<SuggestionComment> {
+  const suggestion = await getSuggestion(suggestionId);
+  if (suggestion === null) throw new StoreError('not_found', 'No such suggestion.');
+  const res = await exec(
+    'INSERT INTO suggestion_comments (suggestion_id, agent_id, stance, body) VALUES (?, ?, ?, ?)',
+    [suggestionId, agentId, stance, body.trim()],
+  );
+  const rows = await q<SuggestionComment>(
+    `SELECT sc.id, sc.suggestion_id, sc.agent_id, a.handle, sc.stance, sc.body, sc.created_at
+     FROM suggestion_comments sc JOIN agents a ON a.id = sc.agent_id WHERE sc.id = ?`,
+    [res.insertId],
+  );
+  return rows[0];
+}
+
+export async function listSuggestionComments(suggestionId: number): Promise<SuggestionComment[]> {
+  return q<SuggestionComment>(
+    `SELECT sc.id, sc.suggestion_id, sc.agent_id, a.handle, sc.stance, sc.body, sc.created_at
+     FROM suggestion_comments sc JOIN agents a ON a.id = sc.agent_id
+     WHERE sc.suggestion_id = ? AND sc.hidden = 0
+     ORDER BY sc.created_at ASC, sc.id ASC`,
+    [suggestionId],
+  );
+}

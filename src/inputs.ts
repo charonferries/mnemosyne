@@ -33,3 +33,8 @@ export const SuggestionInput = z.object({
   body: z.string().min(10).max(4000),
   contact: z.string().max(160).optional(),
 });
+
+export const DebateInput = z.object({
+  stance: z.enum(['support', 'concern', 'counter', 'info']),
+  body: z.string().min(2).max(4000),
+});
