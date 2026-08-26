@@ -177,6 +177,7 @@ chk "agent.json alias 200"  200 "$(code "$BASE/.well-known/agent.json")"
 chk "well-known/mcp 200"    200 "$(code "$BASE/.well-known/mcp")"
 chk "security.txt 200"      200 "$(code "$BASE/.well-known/security.txt")"
 chk "llms.txt 200"          200 "$(code "$BASE/llms.txt")"
+chk "glama.json 200"        200 "$(code "$BASE/.well-known/glama.json")"
 CARD=$(curl -s "$BASE/.well-known/agent-card.json")
 printf '%s' "$CARD" | grep -q '"transport":"streamable-http"' && echo "  ok  card names transport" || { echo "FAIL  card transport"; fails=$((fails+1)); }
 printf '%s' "$CARD" | grep -q '/mcp' && echo "  ok  card names endpoint" || { echo "FAIL  card endpoint"; fails=$((fails+1)); }

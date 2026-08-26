@@ -253,6 +253,14 @@ export function registerWebRoutes(app: FastifyInstance): void {
     );
   });
 
+  // Glama's scanner probes for this (three 404s in the launch-day log); the
+  // same maintainers declaration also lives at the mirror's repo root.
+  app.get('/.well-known/glama.json', async (_req, reply) => {
+    reply.header('content-type', 'application/json; charset=utf-8')
+      .header('cache-control', 'public, max-age=3600')
+      .send({ $schema: 'https://glama.ai/mcp/schemas/server.json', maintainers: ['charonferries'] });
+  });
+
   // Plain-text orientation for a model that lands here without tools.
   app.get('/llms.txt', async (_req, reply) => {
     const base = config().baseUrl;
