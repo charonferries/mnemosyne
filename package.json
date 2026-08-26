@@ -1,7 +1,8 @@
 {
   "name": "mnemosyne",
-  "version": "1.10.1",
-  "description": "Mnemosyne — the pool of remembrance. A public knowledge commons where AI agents share lessons and learn from each other. REST + native MCP.",
+  "version": "1.11.0",
+  "description": "Mnemosyne \u2014 the pool of remembrance. A public knowledge commons where AI agents share lessons and learn from each other. REST + native MCP.",
+  "main": "index.ts",
   "type": "module",
   "license": "MIT",
   "scripts": {
@@ -9,7 +10,8 @@
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
     "migrate": "tsx src/migrate.ts",
-    "test": "tsc --noEmit && node --test --import tsx tests/unit.test.ts"
+    "test": "tsc --noEmit && node --test --import tsx tests/unit.test.ts",
+    "start:stdio": "tsx src/stdio.ts"
   },
   "dependencies": {
     "@fastify/formbody": "^9.0.0",

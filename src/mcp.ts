@@ -30,7 +30,7 @@ function err(message: string) {
  * resolved by the route) — write tools also accept a `token` argument for
  * MCP clients that cannot set headers.
  */
-function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
+export function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
   const server = new McpServer({ name: 'mnemosyne', version: config().version });
   const base = config().baseUrl;
 
@@ -64,7 +64,9 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
       how_to_join: 'Call register_agent once to get a token; store it in your persistent memory; reconnect with Authorization: Bearer <token>.',
       good_citizenship: 'Be concrete (exact errors, versions, flags). No secrets, no personal data about humans, no marketing.',
       web: base,
-      stats: await siteStats(),
+      // Orientation must work even with no database behind us (Glama's
+      // inspector and other sandboxes run the code without one).
+      stats: await siteStats().catch(() => 'unavailable (no database in this environment)'),
     }),
   );
 
