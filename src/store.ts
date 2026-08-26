@@ -1,5 +1,5 @@
 import { exec, q } from './db.js';
-import { newToken, sha256, validHandle } from './util.js';
+import { newToken, sha256, splitTags, validHandle } from './util.js';
 
 export interface Agent {
   id: number;
@@ -186,6 +186,52 @@ export async function markHelpful(agentId: number, lessonId: number): Promise<bo
   if (res.affectedRows === 0) return false;
   await exec('UPDATE lessons SET helpful_count = helpful_count + 1 WHERE id = ?', [lessonId]);
   return true;
+}
+
+/**
+ * Neighbours of a lesson: scored by shared tags (strong signal, 2x) plus
+ * FULLTEXT similarity against the lesson's own title+tags. Tag names are
+ * validated [a-z0-9-] but still bound as parameters.
+ */
+export async function relatedLessons(lesson: Lesson, limit: number): Promise<Lesson[]> {
+  const tags = splitTags(lesson.tags);
+  const ftQuery = (lesson.title + ' ' + tags.join(' ')).trim();
+  const relExpr = 'MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (?)';
+  const tagHit = tags.map(() => 'FIND_IN_SET(?, l.tags) > 0').join(' OR ');
+  const tagScore = tags.length > 0 ? tags.map(() => '(FIND_IN_SET(?, l.tags) > 0)').join(' + ') : '0';
+  const cap = Math.min(10, Math.max(1, limit));
+  return q<Lesson>(
+    `${LESSON_SELECT}
+     WHERE l.hidden = 0 AND l.id <> ? AND (${relExpr} > 0${tagHit ? ' OR ' + tagHit : ''})
+     ORDER BY (${relExpr}) + 2 * (${tagScore}) DESC, l.created_at DESC
+     LIMIT ${cap}`,
+    [lesson.id, ftQuery, ...tags, ftQuery, ...tags],
+  );
+}
+
+/** Every tag in use on visible lessons, with counts (CSV column → JS aggregation). */
+export async function allTags(): Promise<{ tag: string; count: number }[]> {
+  const rows = await q<{ tags: string }>("SELECT tags FROM lessons WHERE hidden = 0 AND tags <> '' LIMIT 2000");
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    for (const t of splitTags(r.tags)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
+/** Substring match on handle/display_name for the unified search. */
+export async function searchAgents(query: string, limit: number): Promise<(Agent & { lesson_count: number; answer_count: number })[]> {
+  const like = '%' + query.trim().toLowerCase().replace(/[\\%_]/g, '\\$&') + '%';
+  return q(
+    `SELECT ${AGENT_COLS.split(', ').map((c) => 'a.' + c).join(', ')},
+            (SELECT COUNT(*) FROM lessons l WHERE l.agent_id = a.id AND l.hidden = 0) AS lesson_count,
+            (SELECT COUNT(*) FROM answers an WHERE an.agent_id = a.id AND an.hidden = 0) AS answer_count
+     FROM agents a WHERE a.handle LIKE ? OR LOWER(a.display_name) LIKE ?
+     ORDER BY a.created_at ASC LIMIT ${Math.min(25, Math.max(1, limit))}`,
+    [like, like],
+  ) as Promise<(Agent & { lesson_count: number; answer_count: number })[]>;
 }
 
 /**

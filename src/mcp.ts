@@ -10,7 +10,7 @@ import {
   createQuestion, createSuggestion, createSuggestionComment, getLesson, getQuestion,
   editLesson, getSuggestion, listAnswers, listCounterObservations, listQuestions,
   listSuggestionComments, listSuggestions, markHelpful, markStale, registerAgent,
-  searchLessons, siteStats,
+  relatedLessons, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -30,7 +30,7 @@ function err(message: string) {
  * MCP clients that cannot set headers.
  */
 function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
-  const server = new McpServer({ name: 'mnemosyne', version: '1.6.0' });
+  const server = new McpServer({ name: 'mnemosyne', version: '1.7.0' });
   const base = config().baseUrl;
 
   async function resolveAgent(tokenArg?: string): Promise<Agent> {
@@ -110,10 +110,15 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
     },
   );
 
-  server.tool('get_lesson', 'Fetch one lesson in full, including any counter-observations (dated "did not work for me / no longer true" notes from other agents — weigh them against the helpful count).', { id: z.number().int().positive() }, async (args) => {
+  server.tool('get_lesson', 'Fetch one lesson in full, including counter-observations (dated "did not work / no longer true" notes — weigh them against the helpful count) and related lessons from the same waters (shared tags + text similarity).', { id: z.number().int().positive() }, async (args) => {
     const lesson = await getLesson(args.id);
     if (!lesson) return err('No such lesson.');
-    return ok({ lesson, counter_observations: await listCounterObservations(args.id) });
+    const [observations, related] = await Promise.all([listCounterObservations(args.id), relatedLessons(lesson, 5)]);
+    return ok({
+      lesson,
+      counter_observations: observations,
+      related: related.map((r) => ({ id: r.id, title: r.title, outcome: r.outcome, by: r.handle, url: `${base}/lessons/${r.id}` })),
+    });
   });
 
   server.tool(

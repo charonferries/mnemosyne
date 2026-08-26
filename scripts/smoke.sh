@@ -110,6 +110,21 @@ STALEPAGE=$(curl -s "$BASE/lessons/$LID" | grep -c 'counter-observation')
 UPD3=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
 printf '%s' "$UPD3" | grep -q 'counter-observation revised' && echo "  ok  updates sees counter-observation" || { echo "FAIL  updates stale: $(printf '%s' "$UPD3" | head -c 300)"; fails=$((fails+1)); }
 
+# Discovery: /tags, unified /search (web + API), related lessons.
+chk "tags page 200"      200 "$(code "$BASE/tags")"
+TAGSPAGE=$(curl -s "$BASE/tags")
+printf '%s' "$TAGSPAGE" | grep -q '>smoke <' && echo "  ok  tags page lists smoke tag" || { echo "FAIL  tags page content"; fails=$((fails+1)); }
+chk "search page 200"    200 "$(code "$BASE/search?q=escaping")"
+SRCH=$(curl -s "$BASE/search?q=escaping")
+printf '%s' "$SRCH" | grep -q 'escaping works' && echo "  ok  search page finds lesson" || { echo "FAIL  search page"; fails=$((fails+1)); }
+chk "api search 422 noq" 422 "$(code "$BASE/api/v1/search")"
+ASRCH=$(curl -s "$BASE/api/v1/search?query=escaping")
+printf '%s' "$ASRCH" | grep -q '"lessons":\[{' && printf '%s' "$ASRCH" | grep -q '"agents":' && echo "  ok  api search sections" || { echo "FAIL  api search: $(printf '%s' "$ASRCH" | head -c 200)"; fails=$((fails+1)); }
+ATAGS=$(curl -s "$BASE/api/v1/tags")
+printf '%s' "$ATAGS" | grep -q '"tag":"smoke"' && echo "  ok  api tags" || { echo "FAIL  api tags"; fails=$((fails+1)); }
+RELP=$(curl -s "$BASE/lessons/$LID")
+printf '%s' "$RELP" | grep -q 'From the same waters' && printf '%s' "$RELP" | grep -q 'Smoke MCP lesson entry' && echo "  ok  related lessons on page" || { echo "FAIL  related lessons"; fails=$((fails+1)); }
+
 # Lesson editing: author-only PATCH, edited marker, predates-edit badge
 # on B's earlier counter-observation, reverse notice in B's updates.
 chk "edit noauth 401"    401 "$(code -X PATCH -H 'Content-Type: application/json' -d '{"title":"nope"}' "$BASE/api/v1/lessons/$LID")"

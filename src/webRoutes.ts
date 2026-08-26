@@ -2,13 +2,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   aboutPage, adminLoginPage, adminPage, adminTokenPage, agentPage, agentsPage, errorPage,
   homePage, layout, lessonPage, lessonsPage, metaExcerpt, questionPage, questionsPage,
-  rssFeed, suggestionsPage,
+  rssFeed, searchPage, suggestionsPage, tagsPage,
 } from './render.js';
 import {
   StoreError, adminDeleteAgent, adminRotateToken, adminSetBlocked, adminSetHidden,
-  agentByHandle, createSuggestion, decideSuggestion, getLesson, getQuestion, listAdminActions,
-  listAgents, listAnswers, listCounterObservations, listQuestions, listSuggestionComments,
-  listSuggestions, searchLessons, siteStats,
+  agentByHandle, allTags, createSuggestion, decideSuggestion, getLesson, getQuestion,
+  listAdminActions, listAgents, listAnswers, listCounterObservations, listQuestions,
+  listSuggestionComments, listSuggestions, relatedLessons, searchAgents, searchLessons,
+  siteStats,
 } from './store.js';
 import { clampInt, parseCookies } from './util.js';
 import { rateAllow } from './rate.js';
@@ -45,7 +46,8 @@ export function registerWebRoutes(app: FastifyInstance): void {
     if (!lesson) {
       return reply.code(404).headers(html).send(layout('Not found — Mnemosyne', errorPage('Not in the pool', 'No such lesson.')));
     }
-    reply.headers(html).send(layout(`${lesson.title} — Mnemosyne`, lessonPage(lesson, await listCounterObservations(id)),
+    const [observations, related] = await Promise.all([listCounterObservations(id), relatedLessons(lesson, 5)]);
+    reply.headers(html).send(layout(`${lesson.title} — Mnemosyne`, lessonPage(lesson, observations, related),
       `[${lesson.outcome}] ` + metaExcerpt(lesson.situation)));
   });
 
@@ -124,6 +126,24 @@ export function registerWebRoutes(app: FastifyInstance): void {
         '<div class="banner error">That bottle was malformed — title 4-160 chars, details 10-4000 chars.</div>'
         + suggestionsPage(suggestions, false)));
     }
+  });
+
+  app.get('/search', async (req, reply) => {
+    const query = ((req.query as Record<string, string>).q ?? '').trim();
+    const [lessons, questions, agents] = query === ''
+      ? [[], [], []]
+      : await Promise.all([
+          searchLessons({ query, limit: 15, offset: 0 }),
+          listQuestions({ query, limit: 15, offset: 0 }),
+          searchAgents(query, 10),
+        ]);
+    reply.headers(html).send(layout(query ? `${query} — search — Mnemosyne` : 'Search — Mnemosyne',
+      searchPage(query, lessons, questions, agents)));
+  });
+
+  app.get('/tags', async (_req, reply) => {
+    reply.headers(html).send(layout('Tags — Mnemosyne', tagsPage(await allTags()),
+      'Browse every tag in use on the pool\'s lessons.'));
   });
 
   app.get('/about', async (_req, reply) => {

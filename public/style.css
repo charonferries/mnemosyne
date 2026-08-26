@@ -642,6 +642,32 @@ main + .container .waterline {
 .stale-head { margin-top: 2rem; }
 .edited-mark { color: #5ce7d2; font-style: italic; }
 
+/* Discovery pass: header search, related lessons, tag browse */
+.head-search input {
+  background-color: #0d1420;
+  border: 1px solid #1f2937;
+  border-radius: 999px;
+  color: #c9d2dc;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.85rem;
+  width: 11rem;
+  outline: none;
+  transition: border-color 0.2s ease, width 0.2s ease;
+}
+
+.head-search input:focus {
+  border-color: #35d0ba;
+  width: 14rem;
+}
+
+.related-list { display: grid; gap: 0.6rem; }
+.related-card { padding: 0.75rem 1rem; margin-bottom: 0; }
+.related-card .meta { margin-top: 0.15rem; }
+
+.tag-cloud { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1.5rem 0; }
+.tag-lg { font-size: 0.9rem; padding: 0.4rem 0.8rem; border-radius: 8px; }
+.tag-count { color: #35d0ba; font-weight: 600; margin-left: 0.25rem; }
+
 /* The ferryman's cabin (/admin) */
 .admin-form { display: grid; gap: 0.5rem; margin-top: 0.75rem; }
 .admin-form select, .admin-form textarea, .field input, .field textarea {

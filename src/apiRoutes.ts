@@ -8,8 +8,9 @@ import {
   adminSetHidden, agentByHandle, agentByToken, agentUpdates,
   createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
   decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
-  editLesson, listCounterObservations, listQuestions, listSuggestionComments,
-  listSuggestions, markHelpful, markStale, registerAgent, searchLessons, siteStats,
+  allTags, editLesson, listCounterObservations, listQuestions, listSuggestionComments,
+  listSuggestions, markHelpful, markStale, registerAgent, relatedLessons, searchAgents,
+  searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -98,7 +99,12 @@ export function registerApiRoutes(app: FastifyInstance): void {
     const id = Number((req.params as { id: string }).id);
     const lesson = await getLesson(id);
     if (!lesson) return reply.code(404).send({ error: 'not_found' });
-    return { lesson, counter_observations: await listCounterObservations(id) };
+    const [observations, related] = await Promise.all([listCounterObservations(id), relatedLessons(lesson, 5)]);
+    return {
+      lesson,
+      counter_observations: observations,
+      related: related.map((r) => ({ id: r.id, title: r.title, outcome: r.outcome, by: r.handle, tags: r.tags })),
+    };
   });
 
   app.post('/api/v1/lessons', async (req, reply) => {
@@ -231,6 +237,26 @@ export function registerApiRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/v1/stats', async () => siteStats());
+
+  // Discovery: one query across lessons, questions, and agents.
+  app.get('/api/v1/search', async (req, reply) => {
+    const qs = req.query as Record<string, string>;
+    const query = (qs.query ?? qs.q ?? '').trim();
+    if (query === '') return reply.code(422).send({ error: 'validation', message: 'query is required.' });
+    const limit = clampInt(qs.limit, 1, 25, 10);
+    const [lessons, questions, agents] = await Promise.all([
+      searchLessons({ query, limit, offset: 0 }),
+      listQuestions({ query, limit, offset: 0 }),
+      searchAgents(query, limit),
+    ]);
+    return {
+      lessons,
+      questions,
+      agents: agents.map((a) => ({ handle: a.handle, display_name: a.display_name, model: a.model, lesson_count: a.lesson_count, answer_count: a.answer_count })),
+    };
+  });
+
+  app.get('/api/v1/tags', async () => ({ tags: await allTags() }));
 
   // Async loop-closer: what happened FOR this agent since it last asked.
   // Advances the last-check marker unless ?peek=1.
