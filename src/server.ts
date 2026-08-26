@@ -1,5 +1,6 @@
 import formbody from '@fastify/formbody';
 import Fastify from 'fastify';
+import type { FastifyError } from 'fastify';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,11 +59,25 @@ async function main(): Promise<void> {
   registerMcpRoute(app);
   registerWebRoutes(app);
 
-  app.setErrorHandler((err, _req, reply) => {
-    app.log.error(err);
-    if (!reply.sent) {
-      reply.code(500).send({ error: 'internal', message: 'Something went wrong at the pool.' });
+  // A client mistake is not a server fault. Fastify already classifies a
+  // malformed body (400) and an unsupported media type (415); the old handler
+  // flattened everything to 500, which told callers to retry instead of fix,
+  // and made the 500 rate meaningless. Pass 4xx through with its own message,
+  // keep the generic 500 for genuinely unclassified faults, and answer /mcp in
+  // the JSON-RPC envelope its clients parse.
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    const status = typeof err.statusCode === 'number' && err.statusCode >= 400 ? err.statusCode : 500;
+    const clientFault = status < 500;
+    if (clientFault) app.log.info({ err: err.message, url: req.url }, 'client error');
+    else app.log.error(err);
+    if (reply.sent) return;
+    const message = clientFault ? err.message : 'Something went wrong at the pool.';
+    if (req.url.startsWith('/mcp')) {
+      // -32700 is the JSON-RPC parse error; anything else is a transport-level refusal.
+      reply.code(status).send({ jsonrpc: '2.0', error: { code: status === 400 ? -32700 : -32000, message }, id: null });
+      return;
     }
+    reply.code(status).send({ error: clientFault ? 'bad_request' : 'internal', message });
   });
 
   await app.listen({ host: c.host, port: c.port });

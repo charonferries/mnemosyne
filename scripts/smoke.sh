@@ -152,6 +152,36 @@ printf '%s' "$LPAGE" | grep -q 'predates the latest edit' && echo "  ok  predate
 UPDB=$(curl -s -H "Authorization: Bearer $TOK2" "$BASE/api/v1/me/updates")
 printf '%s' "$UPDB" | grep -q '"edits_to_lessons_i_flagged":\[{' && echo "  ok  flagger notified of edit" || { echo "FAIL  flagger notice: $(printf '%s' "$UPDB" | head -c 300)"; fails=$((fails+1)); }
 
+# First contact (1.10.0): /mcp answers the protocol AND the humans that open it.
+ACC_MCP='Accept: application/json, text/event-stream'
+chk "mcp POST works"        200 "$(code -X POST -H 'Content-Type: application/json' -H "$ACC_MCP" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' "$BASE/mcp")"
+chk "mcp GET client 405"    405 "$(code -H "$ACC_MCP" "$BASE/mcp")"
+chk "mcp GET bare 405"      405 "$(code "$BASE/mcp")"
+chk "mcp DELETE 405"        405 "$(code -X DELETE "$BASE/mcp")"
+chk "mcp GET browser 200"   200 "$(code -H 'Accept: text/html,application/xhtml+xml' "$BASE/mcp")"
+MCPPAGE=$(curl -s -H 'Accept: text/html,application/xhtml+xml' "$BASE/mcp")
+printf '%s' "$MCPPAGE" | grep -q 'claude mcp add' && echo "  ok  mcp page shows connect line" || { echo "FAIL  mcp page connect line"; fails=$((fails+1)); }
+printf '%s' "$MCPPAGE" | grep -q 'og:image' && echo "  ok  mcp page has card meta" || { echo "FAIL  mcp page og meta"; fails=$((fails+1)); }
+chk "robots allows mcp"     0   "$(curl -s "$BASE/robots.txt" | grep -c 'Disallow: /mcp')"
+
+# Client faults report as client faults, not 500 (health graders send these).
+chk "mcp malformed 400"     400 "$(code -X POST -H 'Content-Type: application/json' -H "$ACC_MCP" -d '{"jsonrpc":"2.0",' "$BASE/mcp")"
+chk "mcp bad ctype 415"     415 "$(code -X POST -H 'Content-Type: text/plain' -H "$ACC_MCP" -d 'nonsense' "$BASE/mcp")"
+chk "mcp bad accept 406"    406 "$(code -X POST -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' "$BASE/mcp")"
+printf '%s' "$(curl -s -X POST -H 'Content-Type: application/json' -H "$ACC_MCP" -d '{"jsonrpc":"2.0",' "$BASE/mcp")" | grep -q '\-32700' && echo "  ok  parse error is jsonrpc -32700" || { echo "FAIL  jsonrpc parse code"; fails=$((fails+1)); }
+chk "api malformed 400"     400 "$(code -X POST -H 'Content-Type: application/json' -d '{"broken":' "$BASE/api/v1/lessons")"
+
+# Discovery: the well-known names directories actually probe.
+chk "agent-card 200"        200 "$(code "$BASE/.well-known/agent-card.json")"
+chk "agent.json alias 200"  200 "$(code "$BASE/.well-known/agent.json")"
+chk "well-known/mcp 200"    200 "$(code "$BASE/.well-known/mcp")"
+chk "security.txt 200"      200 "$(code "$BASE/.well-known/security.txt")"
+chk "llms.txt 200"          200 "$(code "$BASE/llms.txt")"
+CARD=$(curl -s "$BASE/.well-known/agent-card.json")
+printf '%s' "$CARD" | grep -q '"transport":"streamable-http"' && echo "  ok  card names transport" || { echo "FAIL  card transport"; fails=$((fails+1)); }
+printf '%s' "$CARD" | grep -q '/mcp' && echo "  ok  card names endpoint" || { echo "FAIL  card endpoint"; fails=$((fails+1)); }
+printf '%s' "$(curl -s "$BASE/llms.txt")" | grep -q 'claude mcp add' && echo "  ok  llms.txt tells agents to connect" || { echo "FAIL  llms.txt connect"; fails=$((fails+1)); }
+
 # Admin pass (only when the runner knows the admin key — local runs).
 # Order matters: block/rotate exercise agent B, delete removes it last.
 if [ -n "${ADMIN_KEY:-}" ]; then

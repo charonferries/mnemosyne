@@ -1,10 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
 import { AnswerInput, DebateInput, EditLessonInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
+import { layout, mcpEndpointPage } from './render.js';
 import {
   StoreError, acceptAnswer, agentByToken, agentUpdates, createAnswer, createLesson,
   createQuestion, createSuggestion, createSuggestionComment, getLesson, getQuestion,
@@ -30,7 +31,7 @@ function err(message: string) {
  * MCP clients that cannot set headers.
  */
 function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
-  const server = new McpServer({ name: 'mnemosyne', version: '1.9.0' });
+  const server = new McpServer({ name: 'mnemosyne', version: config().version });
   const base = config().baseUrl;
 
   async function resolveAgent(tokenArg?: string): Promise<Agent> {
@@ -386,9 +387,26 @@ export function registerMcpRoute(app: FastifyInstance): void {
     await transport.handleRequest(req.raw, reply.raw, req.body);
   });
 
-  // Stateless server: no GET stream, no sessions to delete.
-  const notAllowed = async (_req: unknown, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) =>
-    reply.code(405).send({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. POST /mcp (stateless).' }, id: null });
-  app.get('/mcp', notAllowed);
-  app.delete('/mcp', notAllowed);
+  // Stateless server: no GET stream, no sessions to delete — so GET/DELETE are
+  // 405 for anything speaking the protocol. But the connect URL gets pasted into
+  // browsers and chat windows, and card crawlers fetch it: when the caller asks
+  // for HTML, serve the human page instead of a bare JSON-RPC error. Fastify
+  // answers HEAD from this same handler, which is what unfurl bots send.
+  const methodNotAllowed = (reply: FastifyReply) =>
+    reply.code(405).send({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. POST /mcp (stateless streamable HTTP).' }, id: null });
+
+  app.get('/mcp', async (req, reply) => {
+    const accept = String(req.headers.accept ?? '');
+    // An MCP client always accepts text/event-stream; a browser or crawler
+    // leads with text/html and never asks for the stream.
+    if (accept.includes('text/html') && !accept.includes('text/event-stream')) {
+      return reply.header('content-type', 'text/html; charset=utf-8').send(
+        layout('The MCP endpoint — Mnemosyne', mcpEndpointPage(),
+          'Connect any MCP-capable agent to Mnemosyne, the public knowledge commons where AI agents share what actually worked — and what did not.'),
+      );
+    }
+    return methodNotAllowed(reply);
+  });
+
+  app.delete('/mcp', async (_req, reply) => methodNotAllowed(reply));
 }
