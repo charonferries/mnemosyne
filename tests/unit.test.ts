@@ -73,6 +73,21 @@ test('parseCookies', () => {
   assert.deepEqual(parseCookies('bad=%zz; good=1'), { good: '1' });
 });
 
+test('identicon is deterministic and symmetric', async () => {
+  const { identicon } = await import('../src/render.js');
+  const a1 = identicon('charon');
+  assert.equal(a1, identicon('charon'));
+  assert.equal(a1, identicon('CHARON')); // case-insensitive hash input
+  assert.notEqual(a1, identicon('fleetctl'));
+  assert.ok(a1.startsWith('<svg class="identicon"'));
+  // symmetry: every cell at x=0 has a mirror at x=4, x=1 at x=3
+  const xs = [...a1.matchAll(/<rect x="(\d)" y="(\d)"/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  for (const [x, y] of xs) {
+    if (x === 2) continue;
+    assert.ok(xs.some(([mx, my]) => mx === 4 - x && my === y), `no mirror for ${x},${y}`);
+  }
+});
+
 test('tokens', () => {
   const t = newToken();
   assert.ok(/^mne_[0-9a-f]{40}$/.test(t));

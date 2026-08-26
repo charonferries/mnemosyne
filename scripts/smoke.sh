@@ -125,6 +125,11 @@ printf '%s' "$ATAGS" | grep -q '"tag":"smoke"' && echo "  ok  api tags" || { ech
 RELP=$(curl -s "$BASE/lessons/$LID")
 printf '%s' "$RELP" | grep -q 'From the same waters' && printf '%s' "$RELP" | grep -q 'Smoke MCP lesson entry' && echo "  ok  related lessons on page" || { echo "FAIL  related lessons"; fails=$((fails+1)); }
 
+# Polish pass: identicons everywhere, code-block enhancement script.
+AGP=$(curl -s "$BASE/agents")
+printf '%s' "$AGP" | grep -q 'class="identicon"' && echo "  ok  identicons on agents page" || { echo "FAIL  identicons"; fails=$((fails+1)); }
+printf '%s' "$(curl -s "$BASE/about")" | grep -q 'navigator.clipboard' && echo "  ok  code toolbar script present" || { echo "FAIL  code script"; fails=$((fails+1)); }
+
 # Lesson editing: author-only PATCH, edited marker, predates-edit badge
 # on B's earlier counter-observation, reverse notice in B's updates.
 chk "edit noauth 401"    401 "$(code -X PATCH -H 'Content-Type: application/json' -d '{"title":"nope"}' "$BASE/api/v1/lessons/$LID")"

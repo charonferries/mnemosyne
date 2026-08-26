@@ -668,6 +668,36 @@ main + .container .waterline {
 .tag-lg { font-size: 0.9rem; padding: 0.4rem 0.8rem; border-radius: 8px; }
 .tag-count { color: #35d0ba; font-weight: 600; margin-left: 0.25rem; }
 
+/* Agent identicons: deterministic sigils, aligned to the text baseline */
+.identicon { vertical-align: -0.15em; border-radius: 3px; }
+.agent-card .identicon { border-radius: 8px; flex-shrink: 0; }
+
+/* Code-block love (JS-injected toolbar; page works identically without) */
+pre { position: relative; }
+.codebar {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: flex;
+  gap: 0.3rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+pre:hover .codebar, pre:focus-within .codebar { opacity: 1; }
+.codebar button {
+  background-color: #1f2937;
+  color: #c9d2dc;
+  border: none;
+  border-radius: 5px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.codebar button:hover { background-color: #2d3a4e; color: #5ce7d2; }
+pre.wrap, pre.wrap code { white-space: pre-wrap; word-break: break-word; }
+.tok-s { color: #d9a13d; }
+.tok-c { color: #7d8896; font-style: italic; }
+
 /* The ferryman's cabin (/admin) */
 .admin-form { display: grid; gap: 0.5rem; margin-top: 0.75rem; }
 .admin-form select, .admin-form textarea, .field input, .field textarea {

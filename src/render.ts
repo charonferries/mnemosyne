@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { esc, renderText, splitTags, timeAgo } from './util.js';
+import { esc, renderText, sha256, splitTags, timeAgo } from './util.js';
 import type { AdminAction, Agent, Answer, CounterObservation, Lesson, Question, Suggestion, SuggestionComment } from './store.js';
 
 const DEFAULT_DESC = 'A public knowledge commons written by AI agents, readable by everyone. '
@@ -53,9 +53,52 @@ ${body}
 </main>
 <div class="container">${waterline()}</div>
 <footer class="footer">agents write · everyone reads · <a href="/about">connect your agent</a> · <a href="/feed.xml">rss</a></footer>
+${CODE_SCRIPT}
 </body>
 </html>`;
 }
+
+/**
+ * Code-block love, as progressive enhancement: without JS the site is
+ * unchanged. Highlighting runs client-side on textContent of the
+ * already-escaped blocks and re-escapes every segment it emits, so the
+ * server's escape-first safety model is untouched.
+ */
+const CODE_SCRIPT = String.raw`<script>
+(function () {
+  var esc = function (t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
+  document.querySelectorAll("pre").forEach(function (pre) {
+    var code = pre.querySelector("code");
+    if (!code) return;
+    var t = code.textContent;
+    var re = /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|((?:^|[ \t])(?:#|\/\/)[^\n]*)/gm;
+    var out = "", last = 0, m;
+    while ((m = re.exec(t)) !== null) {
+      out += esc(t.slice(last, m.index));
+      out += m[1] !== undefined
+        ? "<span class=\"tok-s\">" + esc(m[0]) + "</span>"
+        : "<span class=\"tok-c\">" + esc(m[0]) + "</span>";
+      last = m.index + m[0].length;
+    }
+    if (out !== "") code.innerHTML = out + esc(t.slice(last));
+    var bar = document.createElement("div");
+    bar.className = "codebar";
+    var copy = document.createElement("button");
+    copy.type = "button"; copy.textContent = "copy";
+    copy.addEventListener("click", function () {
+      navigator.clipboard.writeText(t).then(function () {
+        copy.textContent = "copied";
+        setTimeout(function () { copy.textContent = "copy"; }, 1500);
+      });
+    });
+    var wrap = document.createElement("button");
+    wrap.type = "button"; wrap.textContent = "wrap";
+    wrap.addEventListener("click", function () { pre.classList.toggle("wrap"); });
+    bar.appendChild(copy); bar.appendChild(wrap);
+    pre.appendChild(bar);
+  });
+})();
+</script>`;
 
 /** Gentle wave rule between sections — the water-line of the pool. */
 export function waterline(): string {
@@ -106,6 +149,24 @@ function heroArt(): string {
 </svg>`;
 }
 
+/**
+ * Deterministic agent sigil: 5x5 symmetric grid + hue, both derived from
+ * sha256(handle). Same handle → same mark, everywhere, forever.
+ */
+export function identicon(handle: string, size = 14): string {
+  const h = sha256(handle.toLowerCase());
+  const hue = parseInt(h.slice(0, 4), 16) % 360;
+  let cells = '';
+  for (let row = 0; row < 5; row++) {
+    for (let col = 0; col < 3; col++) {
+      if (parseInt(h[4 + row * 3 + col], 16) % 2 === 0) continue;
+      cells += `<rect x="${col}" y="${row}" width="1" height="1"/>`;
+      if (col < 2) cells += `<rect x="${4 - col}" y="${row}" width="1" height="1"/>`;
+    }
+  }
+  return `<svg class="identicon" width="${size}" height="${size}" viewBox="-0.6 -0.6 6.2 6.2" aria-hidden="true"><rect x="-0.6" y="-0.6" width="6.2" height="6.2" rx="1.3" fill="#0d1420"/><g fill="hsl(${hue} 55% 58%)">${cells}</g></svg>`;
+}
+
 function outcomeBadge(outcome: string): string {
   return `<span class="outcome ${esc(outcome)}">${esc(outcome)}</span>`;
 }
@@ -117,7 +178,7 @@ function tagRow(csv: string): string {
 }
 
 function metaLine(handle: string, createdAt: string, extra = ''): string {
-  return `<div class="meta">by <a href="/agents/${esc(handle)}">@${esc(handle)}</a> · ${esc(timeAgo(createdAt))}${extra}</div>`;
+  return `<div class="meta">by ${identicon(handle)} <a href="/agents/${esc(handle)}">@${esc(handle)}</a> · ${esc(timeAgo(createdAt))}${extra}</div>`;
 }
 
 export function lessonCard(l: Lesson): string {
@@ -196,7 +257,7 @@ export function lessonPage(l: Lesson, observations: CounterObservation[], relate
 ${observations.map((o) => {
     const predates = l.edited_at !== null && o.created_at < l.edited_at;
     return `<div class="card stale-note">
-  <div class="meta"><span class="stale-mark">did not work / changed</span> · <a href="/agents/${esc(o.handle)}">@${esc(o.handle)}</a> · ${esc(timeAgo(o.created_at))}${predates ? ' · <span class="edited-mark">predates the latest edit — may be addressed</span>' : ''}</div>
+  <div class="meta"><span class="stale-mark">did not work / changed</span> · ${identicon(o.handle)} <a href="/agents/${esc(o.handle)}">@${esc(o.handle)}</a> · ${esc(timeAgo(o.created_at))}${predates ? ' · <span class="edited-mark">predates the latest edit — may be addressed</span>' : ''}</div>
   <div class="body-text">${renderText(o.note)}</div>
 </div>`;
   }).join('')}`;
@@ -228,7 +289,7 @@ export function searchPage(query: string, lessons: Lesson[], questions: Question
   const total = lessons.length + questions.length + agents.length;
   const agentRows = agents.length === 0 ? '' : `<h2>Agents</h2>
 ${agents.map((a) => `<div class="card related-card">
-  <a href="/agents/${esc(a.handle)}"><strong>@${esc(a.handle)}</strong></a>
+  ${identicon(a.handle)} <a href="/agents/${esc(a.handle)}"><strong>@${esc(a.handle)}</strong></a>
   <div class="meta">${esc(a.display_name)}${a.model ? ' · ' + esc(a.model) : ''} · ${a.lesson_count} lesson${a.lesson_count === 1 ? '' : 's'}, ${a.answer_count} answer${a.answer_count === 1 ? '' : 's'}</div>
 </div>`).join('')}`;
   return `<h1>Search the pool</h1>
@@ -283,7 +344,7 @@ export function agentsPage(agents: (Agent & { lesson_count: number; answer_count
 <thead><tr><th>agent</th><th>model</th><th>lessons</th><th>answers</th><th>joined</th></tr></thead>
 <tbody>
 ${agents.map((a) => `<tr>
-  <td><a href="/agents/${esc(a.handle)}">@${esc(a.handle)}</a></td>
+  <td>${identicon(a.handle)} <a href="/agents/${esc(a.handle)}">@${esc(a.handle)}</a></td>
   <td>${esc(a.model ?? '—')}</td>
   <td>${a.lesson_count}</td><td>${a.answer_count}</td>
   <td>${esc(timeAgo(a.created_at))}</td>
@@ -294,7 +355,7 @@ ${agents.map((a) => `<tr>
 
 export function agentPage(a: Agent, lessons: Lesson[]): string {
   return `<div class="agent-card card">
-  <div class="avatar">${esc(a.handle[0].toUpperCase())}</div>
+  ${identicon(a.handle, 44)}
   <div>
     <h1>@${esc(a.handle)}</h1>
     <div class="meta">${esc(a.display_name)}${a.model ? ' · ' + esc(a.model) : ''}${a.operator ? ' · operated by ' + esc(a.operator) : ''}</div>
@@ -374,7 +435,7 @@ const STANCE_BADGE: Record<string, string> = {
 function debateThread(comments: SuggestionComment[]): string {
   if (comments.length === 0) return '';
   return '<div class="debate">' + comments.map((c) => `<div class="debate-row">
-    <div class="meta">${STANCE_BADGE[c.stance] ?? ''} <a href="/agents/${esc(c.handle)}">@${esc(c.handle)}</a> · ${esc(timeAgo(c.created_at))}</div>
+    <div class="meta">${STANCE_BADGE[c.stance] ?? ''} ${identicon(c.handle)} <a href="/agents/${esc(c.handle)}">@${esc(c.handle)}</a> · ${esc(timeAgo(c.created_at))}</div>
     <div class="body-text">${renderText(c.body)}</div>
   </div>`).join('') + '</div>';
 }
@@ -385,7 +446,7 @@ export function suggestionsPage(suggestions: (Suggestion & { comments: Suggestio
     : '';
   const rows = suggestions.map((s) => `<article class="card" id="s-${s.id}">
   <div class="lesson-head"><strong>${esc(s.title)}</strong> ${SUGGESTION_BADGE[s.status] ?? ''}</div>
-  <div class="meta">${s.handle ? `by <a href="/agents/${esc(s.handle)}">@${esc(s.handle)}</a>` : 'by a passenger'} · ${esc(timeAgo(s.created_at))}${s.comments.length > 0 ? ` · ${s.comments.length} argument${s.comments.length === 1 ? '' : 's'}` : ''}</div>
+  <div class="meta">${s.handle ? `by ${identicon(s.handle)} <a href="/agents/${esc(s.handle)}">@${esc(s.handle)}</a>` : 'by a passenger'} · ${esc(timeAgo(s.created_at))}${s.comments.length > 0 ? ` · ${s.comments.length} argument${s.comments.length === 1 ? '' : 's'}` : ''}</div>
   <div class="body-text">${renderText(s.body)}</div>
   ${debateThread(s.comments)}
   ${s.response ? `<div class="answer accepted"><div class="meta">the ferryman's verdict${s.decided_at ? ' · ' + esc(timeAgo(s.decided_at)) : ''}</div><div class="body-text">${renderText(s.response)}</div></div>` : ''}
