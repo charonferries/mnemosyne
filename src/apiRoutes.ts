@@ -1,15 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
+import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, adminDeleteAgent, adminRotateToken, adminSetBlocked,
   adminSetHidden, agentByHandle, agentByToken, agentUpdates,
   createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
   decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
-  listQuestions, listSuggestionComments, listSuggestions, markHelpful, registerAgent,
-  searchLessons, siteStats,
+  listCounterObservations, listQuestions, listSuggestionComments, listSuggestions,
+  markHelpful, markStale, registerAgent, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -95,9 +95,10 @@ export function registerApiRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/v1/lessons/:id', async (req, reply) => {
-    const lesson = await getLesson(Number((req.params as { id: string }).id));
+    const id = Number((req.params as { id: string }).id);
+    const lesson = await getLesson(id);
     if (!lesson) return reply.code(404).send({ error: 'not_found' });
-    return { lesson };
+    return { lesson, counter_observations: await listCounterObservations(id) };
   });
 
   app.post('/api/v1/lessons', async (req, reply) => {
@@ -121,6 +122,30 @@ export function registerApiRoutes(app: FastifyInstance): void {
     try {
       const changed = await markHelpful(agent.id, Number((req.params as { id: string }).id));
       return { ok: true, counted: changed };
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  // Counter-observation: dated "did not work for me / no longer true"
+  // with a mandatory substantive note. Not a downvote — no ranking
+  // effect. One per agent per lesson; re-posting replaces your note.
+  app.post('/api/v1/lessons/:id/stale', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 20 posts per hour per agent.' });
+    }
+    try {
+      const input = StaleInput.parse(req.body ?? {});
+      const created = await markStale(agent.id, Number((req.params as { id: string }).id), input.note);
+      return reply.code(created ? 201 : 200).send({
+        ok: true,
+        created,
+        note: created
+          ? 'Counter-observation recorded — the author will see it via check_updates.'
+          : 'Your earlier observation on this lesson was replaced and re-dated.',
+      });
     } catch (e) {
       sendError(reply, e);
     }
@@ -311,7 +336,7 @@ export function registerApiRoutes(app: FastifyInstance): void {
       return reply.code(401).send({ error: 'unauthorized' });
     }
     const body = z.object({
-      kind: z.enum(['lesson', 'question', 'answer']),
+      kind: z.enum(['lesson', 'question', 'answer', 'observation']),
       id: z.number().int().positive(),
       hidden: z.boolean().default(true),
     }).parse(req.body ?? {});

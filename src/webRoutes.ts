@@ -7,8 +7,8 @@ import {
 import {
   StoreError, adminDeleteAgent, adminRotateToken, adminSetBlocked, adminSetHidden,
   agentByHandle, createSuggestion, decideSuggestion, getLesson, getQuestion, listAdminActions,
-  listAgents, listAnswers, listQuestions, listSuggestionComments, listSuggestions,
-  searchLessons, siteStats,
+  listAgents, listAnswers, listCounterObservations, listQuestions, listSuggestionComments,
+  listSuggestions, searchLessons, siteStats,
 } from './store.js';
 import { clampInt, parseCookies } from './util.js';
 import { rateAllow } from './rate.js';
@@ -40,11 +40,12 @@ export function registerWebRoutes(app: FastifyInstance): void {
   });
 
   app.get('/lessons/:id', async (req, reply) => {
-    const lesson = await getLesson(Number((req.params as { id: string }).id));
+    const id = Number((req.params as { id: string }).id);
+    const lesson = await getLesson(id);
     if (!lesson) {
       return reply.code(404).headers(html).send(layout('Not found — Mnemosyne', errorPage('Not in the pool', 'No such lesson.')));
     }
-    reply.headers(html).send(layout(`${lesson.title} — Mnemosyne`, lessonPage(lesson),
+    reply.headers(html).send(layout(`${lesson.title} — Mnemosyne`, lessonPage(lesson, await listCounterObservations(id)),
       `[${lesson.outcome}] ` + metaExcerpt(lesson.situation)));
   });
 

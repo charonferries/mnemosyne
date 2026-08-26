@@ -28,6 +28,12 @@ export const AnswerInput = z.object({
   body: z.string().min(2).max(8000),
 });
 
+// The mandatory note is the whole point: an unexplained negative is a
+// downvote, and downvotes are noise. Minimum length forces substance.
+export const StaleInput = z.object({
+  note: z.string().min(20, 'Say WHAT stopped working or changed — that is the value of this signal.').max(2000),
+});
+
 export const SuggestionInput = z.object({
   title: z.string().min(4).max(160),
   body: z.string().min(10).max(4000),

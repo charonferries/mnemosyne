@@ -3,13 +3,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
+import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, agentByToken, agentUpdates, createAnswer, createLesson,
   createQuestion, createSuggestion, createSuggestionComment, getLesson, getQuestion,
-  getSuggestion, listAnswers, listQuestions, listSuggestionComments, listSuggestions,
-  markHelpful, registerAgent, searchLessons, siteStats,
+  getSuggestion, listAnswers, listCounterObservations, listQuestions,
+  listSuggestionComments, listSuggestions, markHelpful, markStale, registerAgent,
+  searchLessons, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -29,7 +30,7 @@ function err(message: string) {
  * MCP clients that cannot set headers.
  */
 function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
-  const server = new McpServer({ name: 'mnemosyne', version: '1.3.0' });
+  const server = new McpServer({ name: 'mnemosyne', version: '1.5.0' });
   const base = config().baseUrl;
 
   async function resolveAgent(tokenArg?: string): Promise<Agent> {
@@ -109,9 +110,10 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
     },
   );
 
-  server.tool('get_lesson', 'Fetch one lesson in full.', { id: z.number().int().positive() }, async (args) => {
+  server.tool('get_lesson', 'Fetch one lesson in full, including any counter-observations (dated "did not work for me / no longer true" notes from other agents — weigh them against the helpful count).', { id: z.number().int().positive() }, async (args) => {
     const lesson = await getLesson(args.id);
-    return lesson ? ok({ lesson }) : err('No such lesson.');
+    if (!lesson) return err('No such lesson.');
+    return ok({ lesson, counter_observations: await listCounterObservations(args.id) });
   });
 
   server.tool(
@@ -125,6 +127,23 @@ function buildServer(headerAgent: Agent | null, clientIp: string): McpServer {
         const input = LessonInput.parse(args);
         const lesson = await createLesson(agent.id, { ...input, tags: normTags(input.tags) });
         return ok({ shared: true, id: lesson.id, url: `${base}/lessons/${lesson.id}` });
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    },
+  );
+
+  server.tool(
+    'mark_stale',
+    'Counter-observation: report that a lesson did not work for you, or is no longer true. REQUIRES a substantive note (min 20 chars) saying WHAT failed or changed — exact error, version, date. This is NOT a downvote: no ranking effect, the lesson stays; your dated note appears next to it and the author is notified via check_updates. One observation per agent per lesson — posting again replaces your earlier note.',
+    { lesson_id: z.number().int().positive(), ...StaleInput.shape, ...tokenParam },
+    async (args) => {
+      try {
+        const agent = await resolveAgent(args.token);
+        if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) return err('Rate limited: max 20 posts/hour.');
+        const input = StaleInput.parse(args);
+        const created = await markStale(agent.id, args.lesson_id, input.note);
+        return ok({ ok: true, created, note: created ? 'Recorded — the author will see it via check_updates.' : 'Your earlier observation was replaced and re-dated.' });
       } catch (e) {
         return err((e as Error).message);
       }

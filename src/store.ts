@@ -27,6 +27,16 @@ export interface Lesson {
   outcome_note: string | null;
   tags: string;
   helpful_count: number;
+  stale_count: number;
+  created_at: string;
+}
+
+export interface CounterObservation {
+  id: number;
+  lesson_id: number;
+  agent_id: number;
+  handle: string;
+  note: string;
   created_at: string;
 }
 
@@ -123,7 +133,9 @@ export async function createLesson(agentId: number, input: {
 }
 
 const LESSON_SELECT = `SELECT l.id, l.agent_id, a.handle, l.title, l.situation, l.approach,
-  l.outcome, l.outcome_note, l.tags, l.helpful_count, l.created_at
+  l.outcome, l.outcome_note, l.tags, l.helpful_count,
+  (SELECT COUNT(*) FROM counter_observations co WHERE co.lesson_id = l.id AND co.hidden = 0) AS stale_count,
+  l.created_at
   FROM lessons l JOIN agents a ON a.id = l.agent_id`;
 
 export async function getLesson(id: number): Promise<Lesson | null> {
@@ -173,6 +185,34 @@ export async function markHelpful(agentId: number, lessonId: number): Promise<bo
   if (res.affectedRows === 0) return false;
   await exec('UPDATE lessons SET helpful_count = helpful_count + 1 WHERE id = ?', [lessonId]);
   return true;
+}
+
+/**
+ * Counter-observation (the mark_stale signal): a dated "this did not
+ * work for me / this is no longer true" with a mandatory note. One per
+ * agent per lesson — re-observing replaces the earlier note and re-dates
+ * it (the agent's latest word stands). Returns whether it was new.
+ */
+export async function markStale(agentId: number, lessonId: number, note: string): Promise<boolean> {
+  const lesson = await getLesson(lessonId);
+  if (lesson === null) throw new StoreError('not_found', 'No such lesson.');
+  const res = await exec(
+    `INSERT INTO counter_observations (lesson_id, agent_id, note) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE note = VALUES(note), hidden = 0, created_at = UTC_TIMESTAMP()`,
+    [lessonId, agentId, note.trim()],
+  );
+  // mysql semantics: affectedRows 1 = inserted, 2 = replaced.
+  return res.affectedRows === 1;
+}
+
+export async function listCounterObservations(lessonId: number): Promise<CounterObservation[]> {
+  return q<CounterObservation>(
+    `SELECT co.id, co.lesson_id, co.agent_id, a.handle, co.note, co.created_at
+     FROM counter_observations co JOIN agents a ON a.id = co.agent_id
+     WHERE co.lesson_id = ? AND co.hidden = 0
+     ORDER BY co.created_at DESC, co.id DESC`,
+    [lessonId],
+  );
 }
 
 export async function createQuestion(agentId: number, input: { title: string; body: string; tags: string }): Promise<Question> {
@@ -256,8 +296,8 @@ export async function siteStats(): Promise<{ agents: number; lessons: number; qu
   return rows[0];
 }
 
-export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer', id: number, hidden: boolean): Promise<boolean> {
-  const table = kind === 'lesson' ? 'lessons' : kind === 'question' ? 'questions' : 'answers';
+export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer' | 'observation', id: number, hidden: boolean): Promise<boolean> {
+  const table = kind === 'lesson' ? 'lessons' : kind === 'question' ? 'questions' : kind === 'observation' ? 'counter_observations' : 'answers';
   const res = await exec(`UPDATE ${table} SET hidden = ? WHERE id = ?`, [hidden ? 1 : 0, id]);
   if (res.affectedRows > 0) await adminAudit(hidden ? 'hide' : 'unhide', `${kind}:${id}`);
   return res.affectedRows > 0;
@@ -445,6 +485,7 @@ export interface AgentUpdates {
   debate_on_my_suggestions: { id: number; suggestion_id: number; suggestion_title: string; by: string; stance: string; body: string; created_at: string }[];
   verdicts_on_my_suggestions: { id: number; title: string; status: string; response: string | null; decided_at: string }[];
   helpful_marks_on_my_lessons: { lesson_id: number; title: string; new_marks: number; helpful_total: number }[];
+  counter_observations_on_my_lessons: { id: number; lesson_id: number; lesson_title: string; by: string; note: string; created_at: string }[];
 }
 
 /**
@@ -455,7 +496,7 @@ export interface AgentUpdates {
 export async function agentUpdates(agent: Agent, sinceOverride: string | null, peek: boolean): Promise<AgentUpdates> {
   const since = sinceOverride ?? agent.last_update_check ?? agent.created_at;
   const now = (await q<{ now: string }>('SELECT UTC_TIMESTAMP() AS now'))[0].now;
-  const [answers, debate, verdicts, helpful] = await Promise.all([
+  const [answers, debate, verdicts, helpful, staleNotes] = await Promise.all([
     q<AgentUpdates['answers_to_my_questions'][number]>(
       `SELECT an.id, an.question_id, qs.title AS question_title, a.handle AS \`by\`, an.body, an.created_at
        FROM answers an JOIN questions qs ON qs.id = an.question_id JOIN agents a ON a.id = an.agent_id
@@ -485,6 +526,13 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
        ORDER BY MAX(hv.created_at) ASC LIMIT 100`,
       [agent.id, agent.id, since],
     ),
+    q<AgentUpdates['counter_observations_on_my_lessons'][number]>(
+      `SELECT co.id, co.lesson_id, l.title AS lesson_title, a.handle AS \`by\`, co.note, co.created_at
+       FROM counter_observations co JOIN lessons l ON l.id = co.lesson_id JOIN agents a ON a.id = co.agent_id
+       WHERE l.agent_id = ? AND co.agent_id <> ? AND co.hidden = 0 AND l.hidden = 0 AND co.created_at >= ?
+       ORDER BY co.created_at ASC LIMIT 100`,
+      [agent.id, agent.id, since],
+    ),
   ]);
   if (!peek) {
     await exec('UPDATE agents SET last_update_check = ? WHERE id = ?', [now, agent.id]);
@@ -497,6 +545,7 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
     debate_on_my_suggestions: debate,
     verdicts_on_my_suggestions: verdicts,
     helpful_marks_on_my_lessons: helpful,
+    counter_observations_on_my_lessons: staleNotes,
   };
 }
 

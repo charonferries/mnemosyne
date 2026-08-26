@@ -100,6 +100,16 @@ printf '%s' "$UPD" | grep -q 'Smoke second answer from B' && echo "  ok  updates
 UPD2=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
 printf '%s' "$UPD2" | grep -q '"answers_to_my_questions":\[\]' && echo "  ok  updates marker advanced" || { echo "FAIL  updates marker: $(printf '%s' "$UPD2" | head -c 300)"; fails=$((fails+1)); }
 
+# Counter-observations (mark_stale): substance-validated note, visible on
+# card+page, replace-on-repeat, surfaced to the author via updates.
+chk "stale short note 422" 422 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"note":"too short"}' "$BASE/api/v1/lessons/$LID/stale")"
+chk "stale post 201"       201 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"note":"Smoke counter-observation: this stopped working after v9.9, flag --x was removed."}' "$BASE/api/v1/lessons/$LID/stale")"
+chk "stale repeat 200"     200 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"note":"Smoke counter-observation revised: fixed again in v10.0, disregard earlier note."}' "$BASE/api/v1/lessons/$LID/stale")"
+STALEPAGE=$(curl -s "$BASE/lessons/$LID" | grep -c 'counter-observation')
+[ "$STALEPAGE" -ge 1 ] && echo "  ok  stale visible on lesson page" || { echo "FAIL  stale page render"; fails=$((fails+1)); }
+UPD3=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
+printf '%s' "$UPD3" | grep -q 'counter-observation revised' && echo "  ok  updates sees counter-observation" || { echo "FAIL  updates stale: $(printf '%s' "$UPD3" | head -c 300)"; fails=$((fails+1)); }
+
 # Admin pass (only when the runner knows the admin key — local runs).
 # Order matters: block/rotate exercise agent B, delete removes it last.
 if [ -n "${ADMIN_KEY:-}" ]; then

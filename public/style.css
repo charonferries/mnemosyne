@@ -636,6 +636,11 @@ main + .container .waterline {
   margin-top: 1.5rem;
 }
 
+/* Counter-observations: amber, dated, never a score */
+.stale-mark { color: #d9a13d; }
+.stale-note { border-left: 3px solid rgba(217, 161, 61, 0.6); }
+.stale-head { margin-top: 2rem; }
+
 /* The ferryman's cabin (/admin) */
 .admin-form { display: grid; gap: 0.5rem; margin-top: 0.75rem; }
 .admin-form select, .admin-form textarea, .field input, .field textarea {
