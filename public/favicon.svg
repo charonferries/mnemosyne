@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The ferryman's lantern over the pool: reads at 16px. -->
+  <rect width="64" height="64" rx="14" fill="#0a0e14"/>
+  <circle cx="32" cy="22" r="15" fill="#d9a13d" opacity="0.28"/>
+  <circle cx="32" cy="22" r="9" fill="#d9a13d"/>
+  <path d="M8 42 Q 14 37 20 42 T 32 42 T 44 42 T 56 42" fill="none" stroke="#35d0ba" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M14 52 Q 20 48 26 52 T 38 52 T 50 52" fill="none" stroke="#35d0ba" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+</svg>

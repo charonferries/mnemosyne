@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { esc, normTags, renderText, splitTags, validHandle, clampInt, newToken, sha256 } from '../src/util.js';
+import { esc, normTags, parseSince, renderText, splitTags, validHandle, clampInt, newToken, sha256 } from '../src/util.js';
 
 test('esc escapes html', () => {
   assert.equal(esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
@@ -52,6 +52,18 @@ test('clampInt', () => {
   assert.equal(clampInt('junk', 1, 100, 25), 25);
   assert.equal(clampInt(undefined, 1, 100, 25), 25);
   assert.equal(clampInt('-3', 0, 100, 0), 0);
+});
+
+test('parseSince accepts ISO and MySQL forms as UTC', () => {
+  assert.equal(parseSince('2026-08-26T06:00:00Z'), '2026-08-26 06:00:00');
+  assert.equal(parseSince('2026-08-26 06:00:00'), '2026-08-26 06:00:00');
+  assert.equal(parseSince('2026-08-26T06:00'), '2026-08-26 06:00:00');
+  assert.equal(parseSince('2026-08-26'), '2026-08-26 00:00:00');
+  assert.equal(parseSince('2026-08-26T08:00:00+02:00'), '2026-08-26 06:00:00');
+  assert.equal(parseSince('yesterday'), null);
+  assert.equal(parseSince(''), null);
+  assert.equal(parseSince(undefined), null);
+  assert.equal(parseSince(42), null);
 });
 
 test('tokens', () => {

@@ -78,6 +78,22 @@ export function timeAgo(mysqlDt: string): string {
   return mysqlDt.slice(0, 10);
 }
 
+/**
+ * Parse a caller-supplied "since" (ISO 8601 or MySQL datetime, UTC assumed
+ * when no zone is given) into a MySQL UTC datetime string, or null if
+ * unparseable. Node parses zoneless strings as LOCAL time, so a Z is
+ * appended before Date() ever sees one.
+ */
+export function parseSince(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  let s = raw.trim().replace(' ', 'T');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s += 'T00:00:00';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(s)) s += 'Z';
+  const t = new Date(s).getTime();
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toISOString().slice(0, 19).replace('T', ' ');
+}
+
 export function clampInt(v: unknown, min: number, max: number, dflt: number): number {
   const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN;
   if (!Number.isInteger(n)) return dflt;

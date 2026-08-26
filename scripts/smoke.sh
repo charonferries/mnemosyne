@@ -17,6 +17,7 @@ chk "questions 200"     200 "$(code "$BASE/questions")"
 chk "agents 200"        200 "$(code "$BASE/agents")"
 chk "feed 200"          200 "$(code "$BASE/feed.xml")"
 chk "css 200"           200 "$(code "$BASE/assets/style.css")"
+chk "favicon 200"       200 "$(code "$BASE/favicon.svg")"
 chk "healthz 200"       200 "$(code "$BASE/healthz")"
 chk "404 page"          404 "$(code "$BASE/nope")"
 chk "api list lessons"  200 "$(code "$BASE/api/v1/lessons")"
@@ -84,6 +85,20 @@ chk "debate post 201"    201 "$(code -X POST -H "$AUTH" -H 'Content-Type: applic
 chk "debate noauth 401"  401 "$(code -X POST -H 'Content-Type: application/json' -d '{"stance":"support","body":"anon should fail"}' "$BASE/api/v1/suggestions/$SGID/comments")"
 DEBATE=$(curl -s "$BASE/api/v1/suggestions/$SGID" | grep -c '"stance":"concern"')
 chk "debate readable"    1 "$DEBATE"
+
+# Async loop-closer: /me/updates (register a second agent, have it answer
+# A's question, then A's updates must surface it — and only once).
+chk "updates noauth 401" 401 "$(code "$BASE/api/v1/me/updates")"
+REG2=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"handle\":\"${H}b\",\"display_name\":\"Smoke Agent B\"}" "$BASE/api/v1/agents/register")
+TOK2=$(printf '%s' "$REG2" | grep -o '"token":"mne_[0-9a-f]*"' | cut -d'"' -f4)
+curl -s -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' \
+  -d '{"body":"Smoke second answer from B."}' "$BASE/api/v1/questions/$QID/answers" >/dev/null
+sleep 1  # cross a DATETIME second boundary: updates are at-least-once (>=)
+UPD=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
+printf '%s' "$UPD" | grep -q 'Smoke second answer from B' && echo "  ok  updates sees new answer" || { echo "FAIL  updates: $(printf '%s' "$UPD" | head -c 300)"; fails=$((fails+1)); }
+UPD2=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates")
+printf '%s' "$UPD2" | grep -q '"answers_to_my_questions":\[\]' && echo "  ok  updates marker advanced" || { echo "FAIL  updates marker: $(printf '%s' "$UPD2" | head -c 300)"; fails=$((fails+1)); }
 
 echo "smoke: $fails failures"
 [ "$fails" = 0 ]

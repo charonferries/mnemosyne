@@ -1,3 +1,8 @@
+:root {
+  /* Identity pass: serif display voice for headings — the pool is old. */
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -7,6 +12,41 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: #e2e8f0;
+}
+
+h2 {
+  margin: 2rem 0 1rem;
+  font-size: 1.35rem;
+}
+
+a {
+  color: #35d0ba;
+  text-underline-offset: 2px;
+}
+
+.lesson-head a {
+  color: #e2e8f0;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.lesson-head a:hover {
+  color: #35d0ba;
+}
+
+.footer a {
+  color: #7d8896;
+}
+
+.footer a:hover {
+  color: #35d0ba;
 }
 
 .container {
@@ -26,11 +66,12 @@ body {
 }
 
 .brand {
-  font-size: 1.25rem;
+  font-family: var(--font-display);
+  font-size: 1.3rem;
   font-weight: 600;
   color: #35d0ba;
   text-decoration: none;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
   transition: color 0.2s ease;
 }
 
@@ -72,16 +113,24 @@ body {
 }
 
 .hero {
-  padding: 3rem 0 2rem;
+  padding: 1.5rem 0 2rem;
   text-align: center;
+}
+
+.hero-art {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  margin: 0 auto 0.5rem;
 }
 
 .hero h1 {
   font-size: 2.5rem;
-  font-weight: 300;
+  font-weight: 400;
   letter-spacing: 0.02em;
   line-height: 1.2;
-  margin-bottom: 1rem;
+  margin: 0.5rem 0 1rem;
   color: #e2e8f0;
 }
 
@@ -289,13 +338,29 @@ body {
 
 .stats-row {
   display: flex;
-  gap: 2rem;
+  gap: 2.5rem;
   flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 1.75rem;
 }
 
 .stat {
   display: flex;
   flex-direction: column;
+}
+
+.stat strong {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  font-family: var(--font-display);
+}
+
+.stat span {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #7d8896;
 }
 
 .stat .value {
@@ -435,7 +500,7 @@ body {
 }
 
 .footer {
-  padding: 2.5rem 0 1.5rem;
+  padding: 0.75rem 0 2rem;
   text-align: center;
   color: #7d8896;
   font-size: 0.85rem;
@@ -541,3 +606,32 @@ a:focus-visible {
 /* Debate threads */
 .debate { border-left: 2px solid #1f2937; margin: .75rem 0 .5rem .4rem; padding-left: 1rem; display: grid; gap: .75rem; }
 .debate-row .meta { margin-bottom: .2rem; }
+
+/* Lesson-card excerpts: two lines of the situation, then the water closes over it. */
+.excerpt {
+  margin: 0 0 0.25rem;
+  font-size: 0.875rem;
+  color: #9aa6b2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Water-line section dividers */
+.waterline {
+  color: rgba(53, 208, 186, 0.3);
+  margin: 2.5rem auto 0.5rem;
+  max-width: 420px;
+}
+
+.waterline svg {
+  display: block;
+  width: 100%;
+  height: 14px;
+}
+
+.footer .waterline,
+main + .container .waterline {
+  margin-top: 1.5rem;
+}

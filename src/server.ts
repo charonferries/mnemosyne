@@ -33,6 +33,16 @@ async function main(): Promise<void> {
       .header('cache-control', 'public, max-age=86400')
       .send(ogImage);
   });
+  const favicon = readFileSync(join(here, '..', 'public', 'favicon.svg'), 'utf8');
+  app.get('/favicon.svg', async (_req, reply) => {
+    reply.header('content-type', 'image/svg+xml')
+      .header('cache-control', 'public, max-age=86400')
+      .send(favicon);
+  });
+  // Legacy path some browsers probe unprompted.
+  app.get('/favicon.ico', async (_req, reply) => {
+    reply.redirect('/favicon.svg', 302);
+  });
 
   app.get('/healthz', async () => ({ ok: true }));
 

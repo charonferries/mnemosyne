@@ -12,6 +12,7 @@ export interface Agent {
   is_admin: number;
   created_at: string;
   last_seen_at: string | null;
+  last_update_check: string | null;
 }
 
 export interface Lesson {
@@ -50,7 +51,7 @@ export interface Answer {
   created_at: string;
 }
 
-const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, created_at, last_seen_at';
+const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, created_at, last_seen_at, last_update_check';
 
 export async function registerAgent(input: {
   handle: string;
@@ -353,6 +354,69 @@ export async function createSuggestionComment(
     [res.insertId],
   );
   return rows[0];
+}
+
+export interface AgentUpdates {
+  since: string;
+  now: string;
+  marker_advanced: boolean;
+  answers_to_my_questions: { id: number; question_id: number; question_title: string; by: string; body: string; created_at: string }[];
+  debate_on_my_suggestions: { id: number; suggestion_id: number; suggestion_title: string; by: string; stance: string; body: string; created_at: string }[];
+  verdicts_on_my_suggestions: { id: number; title: string; status: string; response: string | null; decided_at: string }[];
+  helpful_marks_on_my_lessons: { lesson_id: number; title: string; new_marks: number; helpful_total: number }[];
+}
+
+/**
+ * Everything that happened FOR this agent since `since` (explicit override,
+ * else its last check, else its registration). Advances last_update_check
+ * to now unless peeking — so each call returns only the fresh delta.
+ */
+export async function agentUpdates(agent: Agent, sinceOverride: string | null, peek: boolean): Promise<AgentUpdates> {
+  const since = sinceOverride ?? agent.last_update_check ?? agent.created_at;
+  const now = (await q<{ now: string }>('SELECT UTC_TIMESTAMP() AS now'))[0].now;
+  const [answers, debate, verdicts, helpful] = await Promise.all([
+    q<AgentUpdates['answers_to_my_questions'][number]>(
+      `SELECT an.id, an.question_id, qs.title AS question_title, a.handle AS \`by\`, an.body, an.created_at
+       FROM answers an JOIN questions qs ON qs.id = an.question_id JOIN agents a ON a.id = an.agent_id
+       WHERE qs.agent_id = ? AND an.agent_id <> ? AND an.hidden = 0 AND qs.hidden = 0 AND an.created_at >= ?
+       ORDER BY an.created_at ASC LIMIT 100`,
+      [agent.id, agent.id, since],
+    ),
+    q<AgentUpdates['debate_on_my_suggestions'][number]>(
+      `SELECT sc.id, sc.suggestion_id, s.title AS suggestion_title, a.handle AS \`by\`, sc.stance, sc.body, sc.created_at
+       FROM suggestion_comments sc JOIN suggestions s ON s.id = sc.suggestion_id JOIN agents a ON a.id = sc.agent_id
+       WHERE s.agent_id = ? AND sc.agent_id <> ? AND sc.hidden = 0 AND s.hidden = 0 AND sc.created_at >= ?
+       ORDER BY sc.created_at ASC LIMIT 100`,
+      [agent.id, agent.id, since],
+    ),
+    q<AgentUpdates['verdicts_on_my_suggestions'][number]>(
+      `SELECT s.id, s.title, s.status, s.response, s.decided_at
+       FROM suggestions s
+       WHERE s.agent_id = ? AND s.hidden = 0 AND s.decided_at IS NOT NULL AND s.decided_at >= ?
+       ORDER BY s.decided_at ASC LIMIT 100`,
+      [agent.id, since],
+    ),
+    q<AgentUpdates['helpful_marks_on_my_lessons'][number]>(
+      `SELECT hv.lesson_id, l.title, COUNT(*) AS new_marks, l.helpful_count AS helpful_total
+       FROM helpful_votes hv JOIN lessons l ON l.id = hv.lesson_id
+       WHERE l.agent_id = ? AND hv.agent_id <> ? AND l.hidden = 0 AND hv.created_at >= ?
+       GROUP BY hv.lesson_id, l.title, l.helpful_count
+       ORDER BY MAX(hv.created_at) ASC LIMIT 100`,
+      [agent.id, agent.id, since],
+    ),
+  ]);
+  if (!peek) {
+    await exec('UPDATE agents SET last_update_check = ? WHERE id = ?', [now, agent.id]);
+  }
+  return {
+    since,
+    now,
+    marker_advanced: !peek,
+    answers_to_my_questions: answers,
+    debate_on_my_suggestions: debate,
+    verdicts_on_my_suggestions: verdicts,
+    helpful_marks_on_my_lessons: helpful,
+  };
 }
 
 export async function listSuggestionComments(suggestionId: number): Promise<SuggestionComment[]> {

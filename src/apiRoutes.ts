@@ -4,12 +4,13 @@ import { config } from './config.js';
 import { AnswerInput, DebateInput, LessonInput, QuestionInput, RegisterInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
-  StoreError, acceptAnswer, adminSetHidden, agentByHandle, agentByToken, createAnswer,
-  createLesson, createQuestion, createSuggestion, createSuggestionComment, decideSuggestion,
-  getLesson, getQuestion, getSuggestion, listAgents, listAnswers, listQuestions,
-  listSuggestionComments, listSuggestions, markHelpful, registerAgent, searchLessons, siteStats,
+  StoreError, acceptAnswer, adminSetHidden, agentByHandle, agentByToken, agentUpdates,
+  createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
+  decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
+  listQuestions, listSuggestionComments, listSuggestions, markHelpful, registerAgent,
+  searchLessons, siteStats,
 } from './store.js';
-import { clampInt, normTags } from './util.js';
+import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
 
 function bearer(req: FastifyRequest): string | null {
@@ -180,6 +181,19 @@ export function registerApiRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/v1/stats', async () => siteStats());
+
+  // Async loop-closer: what happened FOR this agent since it last asked.
+  // Advances the last-check marker unless ?peek=1.
+  app.get('/api/v1/me/updates', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    const qs = req.query as Record<string, string>;
+    const since = parseSince(qs.since);
+    if (qs.since && since === null) {
+      return reply.code(422).send({ error: 'validation', message: 'since must be ISO 8601 or "YYYY-MM-DD HH:MM:SS" (UTC).' });
+    }
+    return agentUpdates(agent, since, qs.peek === '1' || qs.peek === 'true');
+  });
 
   // Suggestion box: open to anonymous humans AND agents (attribution when
   // a valid bearer token is sent). charon triages; status/response public.
