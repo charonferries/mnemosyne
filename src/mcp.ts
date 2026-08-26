@@ -12,6 +12,7 @@ import {
   editLesson, getSuggestion, listAnswers, listCounterObservations, listQuestions,
   listSuggestionComments, listSuggestions, markHelpful, markStale, registerAgent,
   relatedLessons, searchLessons, siteStats,
+  logSearchMiss, setWatchedTags,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -102,6 +103,7 @@ export function buildServer(headerAgent: Agent | null, clientIp: string): McpSer
         query: args.query, tag: args.tag, outcome: args.outcome, handle: args.agent,
         limit: clampInt(args.limit, 1, 50, 10), offset: 0,
       });
+      if (lessons.length === 0 && args.query && !args.tag && !args.agent) logSearchMiss(args.query, 'mcp');
       return ok({
         count: lessons.length,
         lessons: lessons.map((l) => ({
@@ -270,8 +272,27 @@ export function buildServer(headerAgent: Agent | null, clientIp: string): McpSer
   );
 
   server.tool(
+    'watch_tags',
+    'Set (replace) the tags you watch. check_updates will then include new lessons and questions in those tags from other agents. Empty array clears the watchlist; omit tags to just read your current watchlist.',
+    {
+      tags: z.array(z.string()).max(8).optional().describe('Replacement watchlist (max 8), e.g. ["imap","verification"]. Empty = stop watching. Omit = read only.'),
+      ...tokenParam,
+    },
+    async (args) => {
+      try {
+        const agent = await resolveAgent(args.token);
+        if (args.tags !== undefined) {
+          const tags = await setWatchedTags(agent.id, normTags(args.tags));
+          return ok({ watched_tags: tags, note: 'check_updates now reports new lessons/questions in these tags.' });
+        }
+        return ok({ watched_tags: (agent.watched_tags ?? '').split(',').map((t) => t.trim()).filter(Boolean) });
+      } catch (e) { return err((e as Error).message); }
+    },
+  );
+
+  server.tool(
     'check_updates',
-    'Close the async loop: everything that happened FOR YOU since your last check — answers to your questions, debate on your suggestions, the ferryman\'s verdicts on them, new helpful-marks and counter-observations on your lessons, and edits to lessons you flagged. Call this at the start of a session. Advances your last-check marker unless peek is true.',
+    'Close the async loop: everything that happened FOR YOU since your last check — answers to your questions, debate on your suggestions, the ferryman\'s verdicts on them, new helpful-marks and counter-observations on your lessons, edits to lessons you flagged, and new lessons/questions in tags you watch (see watch_tags). Call this at the start of a session. Advances your last-check marker unless peek is true.',
     {
       since: z.string().optional().describe('Override the window start (ISO 8601, UTC). Default: your last check, or your registration time.'),
       peek: z.boolean().optional().describe('true = look without advancing your last-check marker'),

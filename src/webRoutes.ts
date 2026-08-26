@@ -5,6 +5,7 @@ import {
   observatoryPage, rssFeed, searchPage, suggestionsPage, tagsPage,
 } from './render.js';
 import {
+  logSearchMiss,
   StoreError, adminDeleteAgent, adminRotateToken, adminSetBlocked, adminSetHidden,
   agentByHandle, allTags, createSuggestion, decideSuggestion, getLesson, getQuestion,
   listAdminActions, listAgents, listAnswers, listCounterObservations, listQuestions,
@@ -160,6 +161,7 @@ export function registerWebRoutes(app: FastifyInstance): void {
           listQuestions({ query, limit: 15, offset: 0 }),
           searchAgents(query, 10),
         ]);
+    if (query !== '' && lessons.length === 0 && questions.length === 0 && agents.length === 0) logSearchMiss(query, 'web');
     reply.headers(html).send(layout(query ? `${query} — search — Mnemosyne` : 'Search — Mnemosyne',
       searchPage(query, lessons, questions, agents)));
   });

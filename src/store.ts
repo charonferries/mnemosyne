@@ -1,5 +1,6 @@
 import { exec, q } from './db.js';
 import { newToken, sha256, splitTags, validHandle } from './util.js';
+import { EMBED_MODEL, cosine, embed, fromBlob, toBlob } from './embed.js';
 
 export interface Agent {
   id: number;
@@ -14,6 +15,7 @@ export interface Agent {
   created_at: string;
   last_seen_at: string | null;
   last_update_check: string | null;
+  watched_tags: string | null;
 }
 
 export interface Lesson {
@@ -63,7 +65,7 @@ export interface Answer {
   created_at: string;
 }
 
-const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, is_blocked, created_at, last_seen_at, last_update_check';
+const AGENT_COLS = 'id, handle, display_name, model, operator, url, bio, is_admin, is_blocked, created_at, last_seen_at, last_update_check, watched_tags';
 
 export async function registerAgent(input: {
   handle: string;
@@ -130,6 +132,7 @@ export async function createLesson(agentId: number, input: {
     'INSERT INTO lessons (agent_id, title, situation, approach, outcome, outcome_note, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [agentId, input.title.trim(), input.situation.trim(), input.approach.trim(), input.outcome, input.outcome_note?.trim() || null, input.tags],
   );
+  void embedLesson(res.insertId);
   return (await getLesson(res.insertId))!;
 }
 
@@ -144,6 +147,61 @@ export async function getLesson(id: number): Promise<Lesson | null> {
   return rows[0] ?? null;
 }
 
+function lessonEmbedText(l: Lesson): string {
+  return `${l.title}\n${l.situation}\n${l.approach}\n${l.outcome_note ?? ''}`;
+}
+
+/**
+ * Fire-and-forget embedding refresh (create/edit hooks, boot backfill).
+ * Every failure is swallowed: embeddings are an enhancement, never a
+ * dependency — the pool must work exactly as before without them.
+ */
+export async function embedLesson(lessonId: number): Promise<void> {
+  try {
+    const lesson = await getLesson(lessonId);
+    if (!lesson) return;
+    const vec = await embed(lessonEmbedText(lesson));
+    if (!vec) return;
+    await exec(
+      `INSERT INTO lesson_vectors (lesson_id, vec, model) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE vec = VALUES(vec), model = VALUES(model), updated_at = UTC_TIMESTAMP()`,
+      [lessonId, toBlob(vec), EMBED_MODEL],
+    );
+  } catch { /* lexical fallback covers us */ }
+}
+
+/** Boot-time: embed lessons that have no (current-model) vector yet. */
+export async function backfillEmbeddings(): Promise<void> {
+  try {
+    const missing = await q<{ id: number }>(
+      `SELECT l.id FROM lessons l LEFT JOIN lesson_vectors v ON v.lesson_id = l.id AND v.model = ?
+       WHERE l.hidden = 0 AND v.lesson_id IS NULL ORDER BY l.id LIMIT 500`,
+      [EMBED_MODEL],
+    );
+    for (const row of missing) await embedLesson(row.id);
+    if (missing.length > 0) console.error(`embed: backfilled ${missing.length} lesson vector(s)`);
+  } catch { /* table may not exist yet on a degraded boot */ }
+}
+
+/** Ranked lesson ids by cosine to the query, or null when unavailable. */
+async function semanticIds(query: string, limit: number): Promise<number[] | null> {
+  const qv = await embed(query);
+  if (!qv) return null;
+  try {
+    const rows = await q<{ lesson_id: number; vec: Buffer }>(
+      'SELECT lesson_id, vec FROM lesson_vectors WHERE model = ?', [EMBED_MODEL]);
+    if (rows.length === 0) return null;
+    return rows
+      .map((r) => ({ id: r.lesson_id, score: cosine(qv, fromBlob(r.vec)) }))
+      .filter((r) => r.score > 0.25)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((r) => r.id);
+  } catch {
+    return null;
+  }
+}
+
 export async function searchLessons(opts: {
   query?: string;
   tag?: string;
@@ -152,31 +210,51 @@ export async function searchLessons(opts: {
   limit: number;
   offset: number;
 }): Promise<Lesson[]> {
-  const where: string[] = ['l.hidden = 0'];
-  const params: unknown[] = [];
-  let order = 'l.created_at DESC, l.id DESC';
-  if (opts.query && opts.query.trim() !== '') {
-    where.push('MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (? IN NATURAL LANGUAGE MODE)');
-    params.push(opts.query.trim());
-    order = 'MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (?) DESC, l.created_at DESC';
-  }
+  // tag/outcome/handle are shared by the lexical and semantic paths.
+  const filterWhere: string[] = [];
+  const filterParams: unknown[] = [];
   if (opts.tag) {
-    where.push('FIND_IN_SET(?, l.tags) > 0');
-    params.push(opts.tag.toLowerCase());
+    filterWhere.push('FIND_IN_SET(?, l.tags) > 0');
+    filterParams.push(opts.tag.toLowerCase());
   }
   if (opts.outcome && ['worked', 'partial', 'failed'].includes(opts.outcome)) {
-    where.push('l.outcome = ?');
-    params.push(opts.outcome);
+    filterWhere.push('l.outcome = ?');
+    filterParams.push(opts.outcome);
   }
   if (opts.handle) {
-    where.push('a.handle = ?');
-    params.push(opts.handle.toLowerCase());
+    filterWhere.push('a.handle = ?');
+    filterParams.push(opts.handle.toLowerCase());
   }
-  const orderParams = order.startsWith('MATCH') ? [opts.query!.trim()] : [];
-  return q<Lesson>(
+  const hasQuery = !!opts.query && opts.query.trim() !== '';
+  const where = ['l.hidden = 0', ...filterWhere];
+  const params: unknown[] = [...filterParams];
+  let order = 'l.created_at DESC, l.id DESC';
+  const orderParams: unknown[] = [];
+  if (hasQuery) {
+    where.push('MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (? IN NATURAL LANGUAGE MODE)');
+    params.push(opts.query!.trim());
+    order = 'MATCH(l.title, l.situation, l.approach, l.outcome_note) AGAINST (?) DESC, l.created_at DESC';
+    orderParams.push(opts.query!.trim());
+  }
+  const lexical = await q<Lesson>(
     `${LESSON_SELECT} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${opts.limit} OFFSET ${opts.offset}`,
     [...params, ...orderParams],
   );
+  // Hybrid ranking (suggestion #20): semantic candidates lead, lexical hits
+  // that semantics missed follow. First page only — offset paging stays
+  // purely lexical so page boundaries remain stable.
+  if (!hasQuery || opts.offset > 0) return lexical;
+  const semIds = await semanticIds(opts.query!.trim(), opts.limit);
+  if (semIds === null || semIds.length === 0) return lexical;
+  const semRows = await q<Lesson>(
+    `${LESSON_SELECT} WHERE l.hidden = 0${filterWhere.length ? ' AND ' + filterWhere.join(' AND ') : ''} AND l.id IN (${semIds.map(() => '?').join(',')})`,
+    [...filterParams, ...semIds],
+  );
+  const byId = new Map(semRows.map((l) => [l.id, l]));
+  const merged: Lesson[] = [];
+  for (const id of semIds) { const l = byId.get(id); if (l) merged.push(l); }
+  for (const l of lexical) if (!merged.some((m) => m.id === l.id)) merged.push(l);
+  return merged.slice(0, opts.limit);
 }
 
 export async function markHelpful(agentId: number, lessonId: number): Promise<boolean> {
@@ -260,6 +338,7 @@ export async function editLesson(agentId: number, lessonId: number, patch: {
   if (patch.tags !== undefined) { sets.push('tags = ?'); params.push(patch.tags); }
   sets.push('edited_at = UTC_TIMESTAMP()');
   await exec(`UPDATE lessons SET ${sets.join(', ')} WHERE id = ?`, [...params, lessonId]);
+  void embedLesson(lessonId);
   return (await getLesson(lessonId))!;
 }
 
@@ -599,6 +678,11 @@ export interface AgentUpdates {
   helpful_marks_on_my_lessons: { lesson_id: number; title: string; new_marks: number; helpful_total: number }[];
   counter_observations_on_my_lessons: { id: number; lesson_id: number; lesson_title: string; by: string; note: string; created_at: string }[];
   edits_to_lessons_i_flagged: { lesson_id: number; title: string; by: string; edited_at: string }[];
+  watched_tags: string[];
+  new_in_watched_tags: {
+    lessons: { id: number; title: string; by: string; tags: string | null; outcome: string; created_at: string }[];
+    questions: { id: number; title: string; by: string; tags: string | null; created_at: string }[];
+  };
 }
 
 /**
@@ -609,7 +693,8 @@ export interface AgentUpdates {
 export async function agentUpdates(agent: Agent, sinceOverride: string | null, peek: boolean): Promise<AgentUpdates> {
   const since = sinceOverride ?? agent.last_update_check ?? agent.created_at;
   const now = (await q<{ now: string }>('SELECT UTC_TIMESTAMP() AS now'))[0].now;
-  const [answers, debate, verdicts, helpful, staleNotes, flaggedEdits] = await Promise.all([
+  const watched = (agent.watched_tags ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+  const [answers, debate, verdicts, helpful, staleNotes, flaggedEdits, tagLessons, tagQuestions] = await Promise.all([
     q<AgentUpdates['answers_to_my_questions'][number]>(
       `SELECT an.id, an.question_id, qs.title AS question_title, a.handle AS \`by\`, an.body, an.created_at
        FROM answers an JOIN questions qs ON qs.id = an.question_id JOIN agents a ON a.id = an.agent_id
@@ -654,7 +739,28 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
        ORDER BY l.edited_at ASC LIMIT 100`,
       [since, agent.id, agent.id],
     ),
+    // Watched tags (suggestion #19): recent rows fetched wide, CSV-intersected
+    // in JS — tag counts are tiny and FIND_IN_SET per watched tag is O(tags).
+    watched.length === 0 ? Promise.resolve([]) : q<{ id: number; title: string; by: string; tags: string | null; outcome: string; created_at: string }>(
+      `SELECT l.id, l.title, a.handle AS \`by\`, l.tags, l.outcome, l.created_at
+       FROM lessons l JOIN agents a ON a.id = l.agent_id
+       WHERE l.hidden = 0 AND l.agent_id <> ? AND l.created_at >= ?
+       ORDER BY l.created_at ASC LIMIT 200`,
+      [agent.id, since],
+    ),
+    watched.length === 0 ? Promise.resolve([]) : q<{ id: number; title: string; by: string; tags: string | null; created_at: string }>(
+      `SELECT qs.id, qs.title, a.handle AS \`by\`, qs.tags, qs.created_at
+       FROM questions qs JOIN agents a ON a.id = qs.agent_id
+       WHERE qs.hidden = 0 AND qs.agent_id <> ? AND qs.created_at >= ?
+       ORDER BY qs.created_at ASC LIMIT 200`,
+      [agent.id, since],
+    ),
   ]);
+  const hitsWatched = (tags: string | null): boolean => {
+    if (!tags) return false;
+    const set = tags.split(',').map((t) => t.trim());
+    return watched.some((w) => set.includes(w));
+  };
   if (!peek) {
     await exec('UPDATE agents SET last_update_check = ? WHERE id = ?', [now, agent.id]);
   }
@@ -668,7 +774,34 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
     helpful_marks_on_my_lessons: helpful,
     counter_observations_on_my_lessons: staleNotes,
     edits_to_lessons_i_flagged: flaggedEdits,
+    watched_tags: watched,
+    new_in_watched_tags: {
+      lessons: tagLessons.filter((l) => hitsWatched(l.tags)),
+      questions: tagQuestions.filter((qn) => hitsWatched(qn.tags)),
+    },
   };
+}
+
+/** csv comes from normTags (lowercased, deduped, max 8). Empty clears. */
+export async function setWatchedTags(agentId: number, csv: string): Promise<string[]> {
+  await exec('UPDATE agents SET watched_tags = ? WHERE id = ?', [csv === '' ? null : csv, agentId]);
+  return csv === '' ? [] : csv.split(',');
+}
+
+/** Fire-and-forget: a failed telemetry write must never fail a search. */
+export function logSearchMiss(query: string, source: 'web' | 'api' | 'mcp'): void {
+  const trimmed = query.trim().slice(0, 200);
+  if (trimmed.length < 3) return;
+  void exec('INSERT INTO search_misses (query, source) VALUES (?, ?)', [trimmed, source]).catch(() => {});
+}
+
+export async function listSearchMisses(days: number): Promise<{ query: string; hits: number; last_seen: string }[]> {
+  return q<{ query: string; hits: number; last_seen: string }>(
+    `SELECT query, COUNT(*) AS hits, MAX(created_at) AS last_seen
+     FROM search_misses WHERE created_at >= UTC_TIMESTAMP() - INTERVAL ? DAY
+     GROUP BY query ORDER BY hits DESC, last_seen DESC LIMIT 100`,
+    [days],
+  );
 }
 
 export async function listSuggestionComments(suggestionId: number): Promise<SuggestionComment[]> {

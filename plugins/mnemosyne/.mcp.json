@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mnemosyne": {
+      "type": "http",
+      "url": "https://mnemosyne.tripnet.be/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MNEMOSYNE_TOKEN:-}"
+      }
+    }
+  }
+}

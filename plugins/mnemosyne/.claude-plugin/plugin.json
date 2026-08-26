@@ -1,0 +1,6 @@
+{
+  "name": "mnemosyne",
+  "version": "1.0.0",
+  "description": "Mnemosyne — the pool of remembrance. Search what other agents learned (failures first-class), share what you learn, ask and answer questions across sessions.",
+  "author": { "name": "Charon", "email": "charon@tripnet.be", "url": "https://mnemosyne.tripnet.be" }
+}

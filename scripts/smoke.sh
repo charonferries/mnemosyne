@@ -178,10 +178,35 @@ chk "well-known/mcp 200"    200 "$(code "$BASE/.well-known/mcp")"
 chk "security.txt 200"      200 "$(code "$BASE/.well-known/security.txt")"
 chk "llms.txt 200"          200 "$(code "$BASE/llms.txt")"
 chk "glama.json 200"        200 "$(code "$BASE/.well-known/glama.json")"
+chk "export lessons 200"    200 "$(code "$BASE/api/v1/export/lessons.jsonl")"
+printf '%s' "$(curl -s "$BASE/api/v1/export/lessons.jsonl" | head -1)" | grep -q '"license":"CC-BY-4.0"' && echo "  ok  export carries license" || { echo "FAIL  export license"; fails=$((fails+1)); }
+chk "export qa 200"         200 "$(code "$BASE/api/v1/export/qa.jsonl")"
+printf '%s' "$(curl -s "$BASE/about")" | grep -q 'plugin install mnemosyne' && echo "  ok  about shows plugin install" || { echo "FAIL  about plugin"; fails=$((fails+1)); }
 CARD=$(curl -s "$BASE/.well-known/agent-card.json")
 printf '%s' "$CARD" | grep -q '"transport":"streamable-http"' && echo "  ok  card names transport" || { echo "FAIL  card transport"; fails=$((fails+1)); }
 printf '%s' "$CARD" | grep -q '/mcp' && echo "  ok  card names endpoint" || { echo "FAIL  card endpoint"; fails=$((fails+1)); }
 printf '%s' "$(curl -s "$BASE/llms.txt")" | grep -q 'claude mcp add' && echo "  ok  llms.txt tells agents to connect" || { echo "FAIL  llms.txt connect"; fails=$((fails+1)); }
+
+# Watched tags + gap telemetry (1.13.0, suggestions #18+#19).
+chk "watches noauth 401"   401 "$(code "$BASE/api/v1/me/watches")"
+chk "watches put 200"      200 "$(code -X PUT -H "$AUTH" -H 'Content-Type: application/json' -d '{"tags":["smoke","testing"]}' "$BASE/api/v1/me/watches")"
+WG=$(curl -s -H "$AUTH" "$BASE/api/v1/me/watches")
+printf '%s' "$WG" | grep -q '"smoke"' && echo "  ok  watchlist stored" || { echo "FAIL  watchlist: $WG"; fails=$((fails+1)); }
+chk "watches bad body 422" 422 "$(code -X PUT -H "$AUTH" -H 'Content-Type: application/json' -d '{"tags":"nope"}' "$BASE/api/v1/me/watches")"
+# agent B posts a lesson tagged smoke -> agent A's updates must surface it
+sleep 1
+TL=$(curl -s -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"title":"Watched-tag smoke lesson","situation":"A lesson to trigger the watched-tags loop in smoke.","approach":"Post with the smoke tag and read the other agent updates.","outcome":"worked","tags":["smoke"]}' "$BASE/api/v1/lessons")
+printf '%s' "$TL" | grep -q '"id"' && echo "  ok  tagged lesson posted" || { echo "FAIL  tagged lesson: $TL"; fails=$((fails+1)); }
+WU=$(curl -s -H "$AUTH" "$BASE/api/v1/me/updates?peek=1")
+printf '%s' "$WU" | grep -q 'Watched-tag smoke lesson' && echo "  ok  updates surface watched tag" || { echo "FAIL  watched updates: $(printf '%s' "$WU" | head -c 200)"; fails=$((fails+1)); }
+# zero-result searches land in the gap log (admin only)
+curl -s "$BASE/search?q=xyzzyplughnothing" >/dev/null
+curl -s "$BASE/api/v1/search?query=xyzzyplughnothing" >/dev/null
+if [ -n "${ADMIN_KEY:-}" ]; then
+  GAPS=$(curl -s -H "X-Admin-Key: $ADMIN_KEY" "$BASE/api/v1/admin/search-misses")
+  printf '%s' "$GAPS" | grep -q 'xyzzyplughnothing' && echo "  ok  search miss logged" || { echo "FAIL  miss log: $(printf '%s' "$GAPS" | head -c 200)"; fails=$((fails+1)); }
+  chk "misses noauth 401"  401 "$(code "$BASE/api/v1/admin/search-misses")"
+fi
 
 # Admin pass (only when the runner knows the admin key — local runs).
 # Order matters: block/rotate exercise agent B, delete removes it last.

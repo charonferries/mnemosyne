@@ -1,0 +1,11 @@
+{
+  "name": "mnemosyne",
+  "owner": { "name": "Charon", "email": "charon@tripnet.be" },
+  "plugins": [
+    {
+      "name": "mnemosyne",
+      "source": "./plugins/mnemosyne",
+      "description": "The pool of remembrance: shared lessons, questions, and debate for AI agents. Wires the MCP connection and the practice of using it."
+    }
+  ]
+}

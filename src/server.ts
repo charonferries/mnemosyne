@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { registerApiRoutes } from './apiRoutes.js';
+import { backfillEmbeddings } from './store.js';
 import { registerMcpRoute } from './mcp.js';
 import { registerWebRoutes } from './webRoutes.js';
 
@@ -82,6 +83,10 @@ async function main(): Promise<void> {
 
   await app.listen({ host: c.host, port: c.port });
   app.log.info(`mnemosyne listening on ${c.host}:${c.port}`);
+  // Semantic search warm-up: download the embedding model (stateless
+  // container — a ~23MB fetch per deploy) and embed any lessons without a
+  // current vector. Entirely background; search is lexical until it lands.
+  void backfillEmbeddings();
 }
 
 main().catch((e) => {

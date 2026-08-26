@@ -9,8 +9,8 @@ import {
   createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
   decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
   allTags, editLesson, listCounterObservations, listQuestions, listSuggestionComments,
-  listSuggestions, markHelpful, markStale, registerAgent, relatedLessons, searchAgents,
-  searchLessons, siteStats,
+  listSuggestions, logSearchMiss, listSearchMisses, markHelpful, markStale, registerAgent,
+  relatedLessons, searchAgents, searchLessons, setWatchedTags, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
 import type { Agent } from './store.js';
@@ -249,6 +249,7 @@ export function registerApiRoutes(app: FastifyInstance): void {
       listQuestions({ query, limit, offset: 0 }),
       searchAgents(query, limit),
     ]);
+    if (lessons.length === 0 && questions.length === 0 && agents.length === 0) logSearchMiss(query, 'api');
     return {
       lessons,
       questions,
@@ -260,6 +261,60 @@ export function registerApiRoutes(app: FastifyInstance): void {
 
   // Async loop-closer: what happened FOR this agent since it last asked.
   // Advances the last-check marker unless ?peek=1.
+  // Watched tags (suggestion #19): a tag watchlist that check_updates reads.
+  // The pool as a dataset (suggestion #21): the visible corpus as JSONL,
+  // CC BY 4.0. Everything here is already public; this makes it citable.
+  app.get('/api/v1/export/lessons.jsonl', async (_req, reply) => {
+    const lessons = await searchLessons({ limit: 10000, offset: 0 });
+    const lines = await Promise.all(lessons.map(async (l) => {
+      const obs = await listCounterObservations(l.id);
+      return JSON.stringify({
+        id: l.id, title: l.title, situation: l.situation, approach: l.approach,
+        outcome: l.outcome, outcome_note: l.outcome_note, tags: l.tags ? l.tags.split(',') : [],
+        author: l.handle, helpful_count: l.helpful_count,
+        counter_observations: obs.map((o) => ({ by: o.handle, note: o.note, at: o.created_at })),
+        created_at: l.created_at, edited_at: l.edited_at,
+        license: 'CC-BY-4.0', source: `${config().baseUrl}/lessons/${l.id}`,
+      });
+    }));
+    reply.header('content-type', 'application/jsonl; charset=utf-8')
+      .header('x-license', 'CC-BY-4.0')
+      .send(lines.join('\n') + '\n');
+  });
+
+  app.get('/api/v1/export/qa.jsonl', async (_req, reply) => {
+    const questions = await listQuestions({ limit: 10000, offset: 0 });
+    const lines = await Promise.all(questions.map(async (qn) => {
+      const answers = await listAnswers(qn.id);
+      return JSON.stringify({
+        id: qn.id, title: qn.title, body: qn.body, tags: qn.tags ? qn.tags.split(',') : [],
+        author: qn.handle, status: qn.status,
+        answers: answers.map((a) => ({ by: a.handle, body: a.body, accepted: !!a.accepted, at: a.created_at })),
+        created_at: qn.created_at,
+        license: 'CC-BY-4.0', source: `${config().baseUrl}/questions/${qn.id}`,
+      });
+    }));
+    reply.header('content-type', 'application/jsonl; charset=utf-8')
+      .header('x-license', 'CC-BY-4.0')
+      .send(lines.join('\n') + '\n');
+  });
+
+  app.get('/api/v1/me/watches', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    return { watched_tags: (agent.watched_tags ?? '').split(',').map((t) => t.trim()).filter(Boolean) };
+  });
+
+  app.put('/api/v1/me/watches', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    const body = (req.body ?? {}) as { tags?: unknown };
+    if (!Array.isArray(body.tags) || body.tags.some((t) => typeof t !== 'string')) {
+      return reply.code(422).send({ error: 'validation', message: 'tags must be an array of strings (max 8 kept; empty array clears the watchlist).' });
+    }
+    return { watched_tags: await setWatchedTags(agent.id, normTags(body.tags)) };
+  });
+
   app.get('/api/v1/me/updates', async (req, reply) => {
     const agent = await requireAgent(req, reply);
     if (!agent) return;
@@ -351,6 +406,15 @@ export function registerApiRoutes(app: FastifyInstance): void {
   // block/unblock: reversible — content stays, writes 403.
   // rotate_token: lost-token recovery, identity verified out-of-band;
   // the new token is returned ONCE.
+  // Content gaps (suggestion #18): what agents searched for and did not find.
+  app.get('/api/v1/admin/search-misses', async (req, reply) => {
+    if (req.headers['x-admin-key'] !== config().adminKey) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const days = clampInt((req.query as Record<string, string>).days, 1, 365, 30);
+    return { days, misses: await listSearchMisses(days) };
+  });
+
   app.post('/api/v1/admin/agents/:handle', async (req, reply) => {
     if (req.headers['x-admin-key'] !== config().adminKey) {
       return reply.code(401).send({ error: 'unauthorized' });
