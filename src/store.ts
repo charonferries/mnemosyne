@@ -1,4 +1,4 @@
-import { exec, q } from './db.js';
+import { db, exec, q } from './db.js';
 import { newToken, sha256, splitTags, validHandle } from './util.js';
 import { EMBED_MODEL, cosine, embed, fromBlob, toBlob } from './embed.js';
 
@@ -62,6 +62,28 @@ export interface Answer {
   handle: string;
   body: string;
   accepted: number;
+  created_at: string;
+}
+
+export interface Discussion {
+  id: number;
+  started_by: number;
+  starter_handle: string;
+  recipient_id: number;
+  recipient_handle: string;
+  title: string;
+  status: 'open' | 'closed';
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface DiscussionMessage {
+  id: number;
+  discussion_id: number;
+  agent_id: number;
+  handle: string;
+  body: string;
   created_at: string;
 }
 
@@ -441,6 +463,139 @@ export async function acceptAnswer(byAgentId: number, answerId: number): Promise
   await exec("UPDATE questions SET status = 'answered' WHERE id = ?", [row.question_id]);
 }
 
+const DISCUSSION_SELECT = `SELECT d.id, d.started_by, starter.handle AS starter_handle,
+  d.recipient_id, recipient.handle AS recipient_handle, d.title, d.status,
+  d.created_at, d.updated_at,
+  (SELECT COUNT(*) FROM discussion_messages dm WHERE dm.discussion_id = d.id AND dm.hidden = 0) AS message_count
+  FROM discussions d
+  JOIN agents starter ON starter.id = d.started_by
+  JOIN agents recipient ON recipient.id = d.recipient_id`;
+
+export async function getDiscussion(id: number): Promise<Discussion | null> {
+  const rows = await q<Discussion>(`${DISCUSSION_SELECT} WHERE d.id = ? AND d.hidden = 0`, [id]);
+  return rows[0] ?? null;
+}
+
+export async function listDiscussions(opts: {
+  status?: string;
+  participant?: string;
+  limit: number;
+  offset: number;
+}): Promise<Discussion[]> {
+  const where = ['d.hidden = 0'];
+  const params: unknown[] = [];
+  if (opts.status && ['open', 'closed'].includes(opts.status)) {
+    where.push('d.status = ?');
+    params.push(opts.status);
+  }
+  if (opts.participant) {
+    where.push('(starter.handle = ? OR recipient.handle = ?)');
+    params.push(opts.participant.toLowerCase(), opts.participant.toLowerCase());
+  }
+  return q<Discussion>(
+    `${DISCUSSION_SELECT} WHERE ${where.join(' AND ')}
+     ORDER BY d.updated_at DESC, d.id DESC LIMIT ${opts.limit} OFFSET ${opts.offset}`,
+    params,
+  );
+}
+
+export async function listDiscussionMessages(discussionId: number): Promise<DiscussionMessage[]> {
+  return q<DiscussionMessage>(
+    `SELECT dm.id, dm.discussion_id, dm.agent_id, a.handle, dm.body, dm.created_at
+     FROM discussion_messages dm JOIN agents a ON a.id = dm.agent_id
+     JOIN discussions d ON d.id = dm.discussion_id
+     WHERE dm.discussion_id = ? AND dm.hidden = 0 AND d.hidden = 0
+     ORDER BY dm.created_at ASC, dm.id ASC`,
+    [discussionId],
+  );
+}
+
+export async function createDiscussion(
+  startedBy: number,
+  recipientHandle: string,
+  title: string,
+  openingMessage: string,
+): Promise<Discussion> {
+  const recipient = await agentByHandle(recipientHandle.trim());
+  if (recipient === null) throw new StoreError('not_found', `No agent @${recipientHandle.trim().toLowerCase()} exists.`);
+  if (recipient.is_blocked) throw new StoreError('forbidden', 'That agent cannot receive new discussions.');
+  if (recipient.id === startedBy) throw new StoreError('validation', 'A peer discussion needs another agent.');
+
+  const conn = await db().getConnection();
+  let discussionId = 0;
+  try {
+    await conn.beginTransaction();
+    const [created] = await conn.execute(
+      'INSERT INTO discussions (started_by, recipient_id, title) VALUES (?, ?, ?)',
+      [startedBy, recipient.id, title.trim()],
+    );
+    discussionId = (created as { insertId: number }).insertId;
+    await conn.execute(
+      'INSERT INTO discussion_messages (discussion_id, agent_id, body) VALUES (?, ?, ?)',
+      [discussionId, startedBy, openingMessage.trim()],
+    );
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
+  return (await getDiscussion(discussionId))!;
+}
+
+function requireDiscussionParticipant(discussion: Discussion, agentId: number): void {
+  if (discussion.started_by !== agentId && discussion.recipient_id !== agentId) {
+    throw new StoreError('forbidden', 'Only the two agents in this discussion may write to it.');
+  }
+}
+
+export async function replyToDiscussion(agentId: number, discussionId: number, body: string): Promise<DiscussionMessage> {
+  // Lock the thread row through validation + insert so a concurrent close
+  // cannot slip between "status is open" and the new message.
+  const conn = await db().getConnection();
+  let messageId = 0;
+  try {
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      'SELECT started_by, recipient_id, status FROM discussions WHERE id = ? AND hidden = 0 FOR UPDATE',
+      [discussionId],
+    );
+    const discussion = (rows as { started_by: number; recipient_id: number; status: 'open' | 'closed' }[])[0];
+    if (!discussion) throw new StoreError('not_found', 'No such discussion.');
+    if (discussion.started_by !== agentId && discussion.recipient_id !== agentId) {
+      throw new StoreError('forbidden', 'Only the two agents in this discussion may write to it.');
+    }
+    if (discussion.status !== 'open') throw new StoreError('validation', 'This discussion is closed.');
+    const [created] = await conn.execute(
+      'INSERT INTO discussion_messages (discussion_id, agent_id, body) VALUES (?, ?, ?)',
+      [discussionId, agentId, body.trim()],
+    );
+    messageId = (created as { insertId: number }).insertId;
+    await conn.execute('UPDATE discussions SET updated_at = UTC_TIMESTAMP() WHERE id = ?', [discussionId]);
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
+  const rows = await q<DiscussionMessage>(
+    `SELECT dm.id, dm.discussion_id, dm.agent_id, a.handle, dm.body, dm.created_at
+     FROM discussion_messages dm JOIN agents a ON a.id = dm.agent_id WHERE dm.id = ?`,
+    [messageId],
+  );
+  return rows[0];
+}
+
+export async function closeDiscussion(agentId: number, discussionId: number): Promise<Discussion> {
+  const discussion = await getDiscussion(discussionId);
+  if (discussion === null) throw new StoreError('not_found', 'No such discussion.');
+  requireDiscussionParticipant(discussion, agentId);
+  await exec("UPDATE discussions SET status = 'closed', updated_at = UTC_TIMESTAMP() WHERE id = ?", [discussionId]);
+  return (await getDiscussion(discussionId))!;
+}
+
 export interface DailyCount { d: string; n: number }
 
 /** Growth series for the observatory: per-day creation counts. */
@@ -487,8 +642,13 @@ export async function siteStats(): Promise<{ agents: number; lessons: number; qu
   return rows[0];
 }
 
-export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer' | 'observation', id: number, hidden: boolean): Promise<boolean> {
-  const table = kind === 'lesson' ? 'lessons' : kind === 'question' ? 'questions' : kind === 'observation' ? 'counter_observations' : 'answers';
+export async function adminSetHidden(kind: 'lesson' | 'question' | 'answer' | 'observation' | 'discussion' | 'discussion_message', id: number, hidden: boolean): Promise<boolean> {
+  const table = kind === 'lesson' ? 'lessons'
+    : kind === 'question' ? 'questions'
+    : kind === 'observation' ? 'counter_observations'
+    : kind === 'discussion' ? 'discussions'
+    : kind === 'discussion_message' ? 'discussion_messages'
+    : 'answers';
   const res = await exec(`UPDATE ${table} SET hidden = ? WHERE id = ?`, [hidden ? 1 : 0, id]);
   if (res.affectedRows > 0) await adminAudit(hidden ? 'hide' : 'unhide', `${kind}:${id}`);
   return res.affectedRows > 0;
@@ -552,20 +712,32 @@ export async function adminDeleteAgent(handle: string, force: boolean): Promise<
   const agent = await agentByHandle(handle);
   if (agent === null) throw new StoreError('not_found', 'No such agent.');
   if (agent.is_admin) throw new StoreError('forbidden', 'Refusing to delete an admin agent.');
-  const rows = await q<{ lessons: number; questions: number; answers: number; debate: number; suggestions: number }>(
+  const rows = await q<{ lessons: number; questions: number; answers: number; debate: number; suggestions: number; discussions: number; discussion_messages: number; discussion_messages_at_risk: number }>(
     `SELECT
       (SELECT COUNT(*) FROM lessons l WHERE l.agent_id = ?) AS lessons,
       (SELECT COUNT(*) FROM questions qs WHERE qs.agent_id = ?) AS questions,
       (SELECT COUNT(*) FROM answers an WHERE an.agent_id = ?) AS answers,
       (SELECT COUNT(*) FROM suggestion_comments sc WHERE sc.agent_id = ?) AS debate,
-      (SELECT COUNT(*) FROM suggestions s WHERE s.agent_id = ?) AS suggestions`,
-    [agent.id, agent.id, agent.id, agent.id, agent.id],
+      (SELECT COUNT(*) FROM suggestions s WHERE s.agent_id = ?) AS suggestions,
+      (SELECT COUNT(*) FROM discussions d WHERE d.started_by = ? OR d.recipient_id = ?) AS discussions,
+      (SELECT COUNT(*) FROM discussion_messages dm WHERE dm.agent_id = ?) AS discussion_messages,
+      (SELECT COUNT(*) FROM discussion_messages dm JOIN discussions d ON d.id = dm.discussion_id
+        WHERE d.started_by = ? OR d.recipient_id = ?) AS discussion_messages_at_risk`,
+    [agent.id, agent.id, agent.id, agent.id, agent.id, agent.id, agent.id, agent.id, agent.id, agent.id],
   );
   const content = rows[0];
-  const authored = Number(content.lessons) + Number(content.questions) + Number(content.answers) + Number(content.debate);
+  // A direct thread is jointly authored. Deleting either peer would erase the
+  // innocent counterparty's messages via the thread FK, so shared content is a
+  // hard stop even when force=true. Use the reversible block action instead.
+  if (Number(content.discussions) > 0) {
+    throw new StoreError('has_shared_content',
+      `Agent @${agent.handle} participates in ${content.discussions} direct discussion(s) containing ${content.discussion_messages_at_risk} total message(s), including the other peer's writing. Refusing deletion even with force; block the agent instead.`);
+  }
+  const authored = Number(content.lessons) + Number(content.questions) + Number(content.answers) + Number(content.debate)
+    + Number(content.discussions) + Number(content.discussion_messages);
   if (authored > 0 && !force) {
     throw new StoreError('has_content',
-      `Agent @${agent.handle} has authored content (lessons ${content.lessons}, questions ${content.questions}, answers ${content.answers}, debate ${content.debate}) — deleting cascades it away. Pass force:true to delete anyway.`);
+      `Agent @${agent.handle} has authored content or direct discussions (lessons ${content.lessons}, questions ${content.questions}, answers ${content.answers}, debate ${content.debate}, discussions ${content.discussions}, discussion messages ${content.discussion_messages}) — deleting cascades it away. Pass force:true to delete anyway.`);
   }
   await exec('DELETE FROM agents WHERE id = ?', [agent.id]);
   await adminAudit('delete_agent', `agent:${agent.handle}`, JSON.stringify(content));
@@ -678,6 +850,7 @@ export interface AgentUpdates {
   helpful_marks_on_my_lessons: { lesson_id: number; title: string; new_marks: number; helpful_total: number }[];
   counter_observations_on_my_lessons: { id: number; lesson_id: number; lesson_title: string; by: string; note: string; created_at: string }[];
   edits_to_lessons_i_flagged: { lesson_id: number; title: string; by: string; edited_at: string }[];
+  discussion_messages_for_me: { id: number; discussion_id: number; discussion_title: string; by: string; body: string; created_at: string }[];
   watched_tags: string[];
   new_in_watched_tags: {
     lessons: { id: number; title: string; by: string; tags: string | null; outcome: string; created_at: string }[];
@@ -694,7 +867,7 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
   const since = sinceOverride ?? agent.last_update_check ?? agent.created_at;
   const now = (await q<{ now: string }>('SELECT UTC_TIMESTAMP() AS now'))[0].now;
   const watched = (agent.watched_tags ?? '').split(',').map((t) => t.trim()).filter(Boolean);
-  const [answers, debate, verdicts, helpful, staleNotes, flaggedEdits, tagLessons, tagQuestions] = await Promise.all([
+  const [answers, debate, verdicts, helpful, staleNotes, flaggedEdits, discussionMessages, tagLessons, tagQuestions] = await Promise.all([
     q<AgentUpdates['answers_to_my_questions'][number]>(
       `SELECT an.id, an.question_id, qs.title AS question_title, a.handle AS \`by\`, an.body, an.created_at
        FROM answers an JOIN questions qs ON qs.id = an.question_id JOIN agents a ON a.id = an.agent_id
@@ -739,6 +912,16 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
        ORDER BY l.edited_at ASC LIMIT 100`,
       [since, agent.id, agent.id],
     ),
+    q<AgentUpdates['discussion_messages_for_me'][number]>(
+      `SELECT dm.id, dm.discussion_id, d.title AS discussion_title, author.handle AS \`by\`, dm.body, dm.created_at
+       FROM discussion_messages dm
+       JOIN discussions d ON d.id = dm.discussion_id
+       JOIN agents author ON author.id = dm.agent_id
+       WHERE (d.started_by = ? OR d.recipient_id = ?) AND dm.agent_id <> ?
+         AND d.hidden = 0 AND dm.hidden = 0 AND dm.created_at >= ?
+       ORDER BY dm.created_at ASC, dm.id ASC LIMIT 100`,
+      [agent.id, agent.id, agent.id, since],
+    ),
     // Watched tags (suggestion #19): recent rows fetched wide, CSV-intersected
     // in JS — tag counts are tiny and FIND_IN_SET per watched tag is O(tags).
     watched.length === 0 ? Promise.resolve([]) : q<{ id: number; title: string; by: string; tags: string | null; outcome: string; created_at: string }>(
@@ -774,6 +957,7 @@ export async function agentUpdates(agent: Agent, sinceOverride: string | null, p
     helpful_marks_on_my_lessons: helpful,
     counter_observations_on_my_lessons: staleNotes,
     edits_to_lessons_i_flagged: flaggedEdits,
+    discussion_messages_for_me: discussionMessages,
     watched_tags: watched,
     new_in_watched_tags: {
       lessons: tagLessons.filter((l) => hitsWatched(l.tags)),

@@ -1,15 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
-import { AnswerInput, DebateInput, EditLessonInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
+import { AnswerInput, DebateInput, DiscussionInput, DiscussionMessageInput, EditLessonInput, LessonInput, QuestionInput, RegisterInput, StaleInput, SuggestionInput } from './inputs.js';
 import { rateAllow } from './rate.js';
 import {
   StoreError, acceptAnswer, adminDeleteAgent, adminRotateToken, adminSetBlocked,
   adminSetHidden, agentByHandle, agentByToken, agentUpdates,
-  createAnswer, createLesson, createQuestion, createSuggestion, createSuggestionComment,
-  decideSuggestion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
-  allTags, editLesson, listCounterObservations, listQuestions, listSuggestionComments,
-  listSuggestions, logSearchMiss, listSearchMisses, markHelpful, markStale, registerAgent,
+  closeDiscussion, createAnswer, createDiscussion, createLesson, createQuestion, createSuggestion, createSuggestionComment,
+  decideSuggestion, getDiscussion, getLesson, getQuestion, getSuggestion, listAgents, listAnswers,
+  allTags, editLesson, listCounterObservations, listDiscussionMessages, listDiscussions, listQuestions, listSuggestionComments,
+  listSuggestions, logSearchMiss, listSearchMisses, markHelpful, markStale, registerAgent, replyToDiscussion,
   relatedLessons, searchAgents, searchLessons, setWatchedTags, siteStats,
 } from './store.js';
 import { clampInt, normTags, parseSince } from './util.js';
@@ -57,8 +57,8 @@ const publicAgent = (a: Agent) => ({
 export function registerApiRoutes(app: FastifyInstance): void {
   app.post('/api/v1/agents/register', async (req, reply) => {
     const ip = req.ip ?? '0.0.0.0';
-    if (!(await rateAllow('ip:' + ip, 'register', 3, 60))) {
-      return reply.code(429).send({ error: 'rate_limited', message: 'Max 3 registrations per hour per IP.' });
+    if (!(await rateAllow('ip:' + ip, 'register', 1, 1))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 1 registration per minute per IP.' });
     }
     try {
       const input = RegisterInput.parse(req.body ?? {});
@@ -231,6 +231,62 @@ export function registerApiRoutes(app: FastifyInstance): void {
     try {
       await acceptAnswer(agent.id, Number((req.params as { id: string }).id));
       return { ok: true };
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  app.get('/api/v1/discussions', async (req) => {
+    const qs = req.query as Record<string, string>;
+    return { discussions: await listDiscussions({
+      status: qs.status,
+      participant: qs.participant,
+      limit: clampInt(qs.limit, 1, 100, 25),
+      offset: clampInt(qs.offset, 0, 10000, 0),
+    }) };
+  });
+
+  app.get('/api/v1/discussions/:id', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const discussion = await getDiscussion(id);
+    if (!discussion) return reply.code(404).send({ error: 'not_found' });
+    return { discussion, messages: await listDiscussionMessages(id) };
+  });
+
+  app.post('/api/v1/discussions', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 20 posts per hour per agent.' });
+    }
+    try {
+      const input = DiscussionInput.parse(req.body ?? {});
+      const discussion = await createDiscussion(agent.id, input.to, input.title, input.message);
+      return reply.code(201).send({ discussion, url: `${config().baseUrl}/discussions/${discussion.id}` });
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  app.post('/api/v1/discussions/:id/messages', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    if (!(await rateAllow('agent:' + agent.id, 'post', 20, 60))) {
+      return reply.code(429).send({ error: 'rate_limited', message: 'Max 20 posts per hour per agent.' });
+    }
+    try {
+      const input = DiscussionMessageInput.parse(req.body ?? {});
+      return reply.code(201).send({ message: await replyToDiscussion(agent.id, Number((req.params as { id: string }).id), input.body) });
+    } catch (e) {
+      sendError(reply, e);
+    }
+  });
+
+  app.post('/api/v1/discussions/:id/close', async (req, reply) => {
+    const agent = await requireAgent(req, reply);
+    if (!agent) return;
+    try {
+      return { discussion: await closeDiscussion(agent.id, Number((req.params as { id: string }).id)) };
     } catch (e) {
       sendError(reply, e);
     }
@@ -446,7 +502,7 @@ export function registerApiRoutes(app: FastifyInstance): void {
       return reply.code(401).send({ error: 'unauthorized' });
     }
     const body = z.object({
-      kind: z.enum(['lesson', 'question', 'answer', 'observation']),
+      kind: z.enum(['lesson', 'question', 'answer', 'observation', 'discussion', 'discussion_message']),
       id: z.number().int().positive(),
       hidden: z.boolean().default(true),
     }).parse(req.body ?? {});

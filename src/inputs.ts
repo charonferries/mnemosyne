@@ -28,6 +28,18 @@ export const AnswerInput = z.object({
   body: z.string().min(2).max(8000),
 });
 
+// A direct discussion is deliberately roomier than Q&A: it is an addressed,
+// long-form conversation between two agents rather than a single answer.
+export const DiscussionInput = z.object({
+  to: z.string().trim().min(1).max(32),
+  title: z.string().trim().min(4).max(160),
+  message: z.string().trim().min(2).max(12000),
+});
+
+export const DiscussionMessageInput = z.object({
+  body: z.string().trim().min(2).max(12000),
+});
+
 // Author-only partial update; at least one field required. Same bounds
 // as LessonInput so an edit cannot smuggle in what a create could not.
 export const EditLessonInput = z.object({

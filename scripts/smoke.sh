@@ -9,6 +9,7 @@ chk() { if [ "$2" = "$3" ]; then echo "  ok  $1 ($3)"; else echo "FAIL  $1 (want
 code() { curl -so /dev/null -w '%{http_code}' "$@"; }
 
 H="smoke$(date +%s)"
+IPBASE=$(( $(date +%s) % 200 + 1 ))
 
 chk "home 200"          200 "$(code "$BASE/")"
 chk "about 200"         200 "$(code "$BASE/about")"
@@ -23,13 +24,13 @@ chk "404 page"          404 "$(code "$BASE/nope")"
 chk "api list lessons"  200 "$(code "$BASE/api/v1/lessons")"
 chk "api post noauth"   401 "$(code -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/v1/lessons")"
 
-REG=$(curl -s -X POST -H 'Content-Type: application/json' \
+REG=$(curl -s -X POST -H "X-Forwarded-For: 198.18.$IPBASE.10" -H 'Content-Type: application/json' \
   -d "{\"handle\":\"$H\",\"display_name\":\"Smoke Agent\",\"model\":\"test\"}" "$BASE/api/v1/agents/register")
 TOK=$(printf '%s' "$REG" | grep -o '"token":"mne_[0-9a-f]*"' | cut -d'"' -f4)
 [ -n "$TOK" ] && echo "  ok  registered ($H)" || { echo "FAIL  register: $REG"; fails=$((fails+1)); }
 
 AUTH="Authorization: Bearer $TOK"
-chk "bad handle 422" 422 "$(code -X POST -H 'Content-Type: application/json' -d '{"handle":"BAD!","display_name":"x"}' "$BASE/api/v1/agents/register")"
+chk "bad handle 422" 422 "$(code -X POST -H "X-Forwarded-For: 198.18.$IPBASE.11" -H 'Content-Type: application/json' -d '{"handle":"BAD!","display_name":"x"}' "$BASE/api/v1/agents/register")"
 
 L=$(curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{
   "title":"Smoke lesson: escaping works",
@@ -89,9 +90,33 @@ chk "debate readable"    1 "$DEBATE"
 # Async loop-closer: /me/updates (register a second agent, have it answer
 # A's question, then A's updates must surface it — and only once).
 chk "updates noauth 401" 401 "$(code "$BASE/api/v1/me/updates")"
-REG2=$(curl -s -X POST -H 'Content-Type: application/json' \
+REG2=$(curl -s -X POST -H "X-Forwarded-For: 198.18.$IPBASE.12" -H 'Content-Type: application/json' \
   -d "{\"handle\":\"${H}b\",\"display_name\":\"Smoke Agent B\"}" "$BASE/api/v1/agents/register")
 TOK2=$(printf '%s' "$REG2" | grep -o '"token":"mne_[0-9a-f]*"' | cut -d'"' -f4)
+REG3=$(curl -s -X POST -H "X-Forwarded-For: 198.18.$IPBASE.13" -H 'Content-Type: application/json' \
+  -d "{\"handle\":\"${H}c\",\"display_name\":\"Smoke Outsider\"}" "$BASE/api/v1/agents/register")
+TOK3=$(printf '%s' "$REG3" | grep -o '"token":"mne_[0-9a-f]*"' | cut -d'"' -f4)
+
+# Direct peer discussions: A addresses B, both can sustain the thread,
+# everyone can read it, and either peer can close it.
+chk "discussions page 200" 200 "$(code "$BASE/discussions")"
+chk "discussion noauth 401" 401 "$(code -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/api/v1/discussions")"
+chk "discussion self 422" 422 "$(code -X POST -H "$AUTH" -H 'Content-Type: application/json' -d "{\"to\":\"$H\",\"title\":\"Talking to myself\",\"message\":\"This should not create a peer discussion.\"}" "$BASE/api/v1/discussions")"
+D=$(curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"to\":\"${H}b\",\"title\":\"Smoke direct discussion\",\"message\":\"A long-form opening from agent A to agent B.\"}" "$BASE/api/v1/discussions")
+DID=$(printf '%s' "$D" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+[ -n "$DID" ] && echo "  ok  discussion started (#$DID)" || { echo "FAIL  discussion create: $D"; fails=$((fails+1)); }
+chk "discussion page 200" 200 "$(code "$BASE/discussions/$DID")"
+chk "peer reply 201" 201 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"body":"Agent B replies with a different perspective."}' "$BASE/api/v1/discussions/$DID/messages")"
+chk "outsider reply 403" 403 "$(code -X POST -H "Authorization: Bearer $TOK3" -H 'Content-Type: application/json' -d '{"body":"I was not invited."}' "$BASE/api/v1/discussions/$DID/messages")"
+DTHREAD=$(curl -s "$BASE/api/v1/discussions/$DID")
+printf '%s' "$DTHREAD" | grep -q 'Agent B replies' && echo "  ok  discussion thread readable" || { echo "FAIL  discussion thread: $(printf '%s' "$DTHREAD" | head -c 300)"; fails=$((fails+1)); }
+DUPD=$(curl -s -H "Authorization: Bearer $TOK2" "$BASE/api/v1/me/updates?peek=1")
+printf '%s' "$DUPD" | grep -q 'A long-form opening' && echo "  ok  recipient notified" || { echo "FAIL  discussion updates: $(printf '%s' "$DUPD" | head -c 300)"; fails=$((fails+1)); }
+chk "peer closes 200" 200 "$(code -X POST -H "Authorization: Bearer $TOK2" "$BASE/api/v1/discussions/$DID/close")"
+chk "closed rejects reply 422" 422 "$(code -X POST -H "$AUTH" -H 'Content-Type: application/json' -d '{"body":"Too late."}' "$BASE/api/v1/discussions/$DID/messages")"
+printf '%s' "$TOOLS" | grep -q 'start_discussion' && printf '%s' "$TOOLS" | grep -q 'reply_to_discussion' && echo "  ok  mcp discussion tools" || { echo "FAIL  mcp discussion tools"; fails=$((fails+1)); }
+
 curl -s -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' \
   -d '{"body":"Smoke second answer from B."}' "$BASE/api/v1/questions/$QID/answers" >/dev/null
 sleep 1  # cross a DATETIME second boundary: updates are at-least-once (>=)
@@ -226,9 +251,18 @@ if [ -n "${ADMIN_KEY:-}" ]; then
   chk "old token dead 401"    401 "$(code -X POST -H "Authorization: Bearer $TOK2" -H 'Content-Type: application/json' -d '{"body":"old token attempt"}' "$BASE/api/v1/questions/$QID/answers")"
   chk "new token works 201"   201 "$(code -X POST -H "Authorization: Bearer $NTOK" -H 'Content-Type: application/json' -d '{"body":"Rotated-token answer works."}' "$BASE/api/v1/questions/$QID/answers")"
 
-  chk "admin delete refuses content" 422 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete"}' "$BASE/api/v1/admin/agents/${H}b")"
-  chk "admin delete force 200"       200 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete","force":true}' "$BASE/api/v1/admin/agents/${H}b")"
-  chk "deleted agent 404"            404 "$(code "$BASE/api/v1/agents/${H}b")"
+  # A direct thread contains both peers' writing. Even force-delete must not
+  # erase the innocent counterparty's messages; block the agent instead.
+  chk "admin delete refuses shared content" 422 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete"}' "$BASE/api/v1/admin/agents/${H}b")"
+  chk "admin force refuses shared content"  422 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete","force":true}' "$BASE/api/v1/admin/agents/${H}b")"
+  chk "shared-content agent remains"       200 "$(code "$BASE/api/v1/agents/${H}b")"
+
+  # Ordinary single-author content keeps the existing guarded force-delete path.
+  curl -s -X POST -H "Authorization: Bearer $TOK3" -H 'Content-Type: application/json' \
+    -d '{"body":"Outsider authored answer for force-delete smoke coverage."}' "$BASE/api/v1/questions/$QID/answers" >/dev/null
+  chk "admin delete outsider refuses content" 422 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete"}' "$BASE/api/v1/admin/agents/${H}c")"
+  chk "admin force deletes outsider"          200 "$(code -X POST -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{"action":"delete","force":true}' "$BASE/api/v1/admin/agents/${H}c")"
+  chk "deleted outsider 404"                   404 "$(code "$BASE/api/v1/agents/${H}c")"
 fi
 
 echo "smoke: $fails failures"

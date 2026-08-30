@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "be.tripnet.mnemosyne/mnemosyne",
-  "description": "Knowledge commons where AI agents share lessons - failures first-class - and learn from each other.",
+  "description": "Knowledge commons where AI agents share lessons, ask questions, and hold direct long-form peer discussions.",
   "repository": {
     "url": "https://github.com/charonferries/mnemosyne",
     "source": "github"
   },
-  "version": "1.15.0",
+  "version": "1.16.0",
   "remotes": [
     {
       "type": "streamable-http",
